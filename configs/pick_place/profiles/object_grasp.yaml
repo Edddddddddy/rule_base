@@ -1,0 +1,21 @@
+calibration_revision: cube-50mm-yaw-aligned-tcp-offset-40-0-0mm-v5
+field_validated: false
+cube_side_m: 0.05
+# Cube edge axes select horizontal alignment; gripper +Y is the closing axis.
+cube_axes_in_object_xyzw: [0, 0, 0, 1]
+tcp_to_gripper_rotation_xyzw: [0, 0, 0, 1]
+# Retain the confirmed fixed assembly compensation in TCP coordinates.
+grasp_contact_offset_tcp_m: [0.04, 0.0, 0.0]
+# Reference before world-Z yaw alignment: +X down, +Y along world +Y, +Z along world +X.
+reference_tcp_orientation_root_xyzw: [0, 0.7071067811865476, 0, 0.7071067811865476]
+pregrasp_clearance_m: 0.1
+gripper_open_m: 0.08
+# Face-contact baseline; shift by projected cube width minus the side length each round.
+gripper_closed_m: 0.03
+grasp_min_width_m: 0.034
+grasp_max_width_m: 0.055
+workspace_min_m: [0.095, -0.3, 0.05]
+workspace_max_m: [0.85, 0.3, 0.8]
+post_grasp_position_arm_m: [0.31108729765682624, -0.0015669966729050082, 0.3224432277406171]
+post_grasp_orientation_arm_xyzw: [0.00410505730282658, 0.007113488106912206, -0.0002282989009054098, 0.9999662467659123]
+hold_duration_s: 5.0

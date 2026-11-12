@@ -1,0 +1,74 @@
+# SO-101 真机 Pick 几何模板（WP5；D-094 动作优化版）。
+#
+# 与 mock 的 object_grasp.yaml 同构；物体/放置点占位由 tools 独立发布器以动态 TF 提供（F-013）：
+#   * 现场物体：**1.5 cm 小方块**，base_link 系顶抓点 ≈(0.28, 0, -0.014)（写在该发布器自己的
+#     配置里；rule_base 只读 frames.object，本文件不写物体坐标）；
+#   * TCP 用 `grasp_tcp_link`（p7 兼容：+X = 手指方向/接近轴，+Y = 夹爪闭合轴）；
+#   * grasp_contact_offset=0 → 顶抓 TCP = 物体顶抓点；
+#   * pregrasp = 抓取点沿 root +Z +3 cm（pregrasp_clearance_m 0.03）；
+#   * post_grasp = (0.26, 0.05) 区间的 (0.26, 0, 0.05)：后撤 2 cm、抬升约 6.4 cm。
+#   * **观察位姿**（抓取前）：抓取点 + observation_offset_root_m + root +Z*observation_clearance_m，
+#     姿态固定为下面的 reference 顶抓姿态（不随方块 yaw 变）→ 观察 TCP≈(0.241, 0.0281, 0.046)，
+#     腕部相机竖直向下、在方块正上方约 0.135 m；随后再回 pregrasp 下探。
+#     observation_offset_root_m 是名义腕部相机挂载补偿（现场按 2M 画面可微调；
+#     调 arm_stack 的 cam_wrist_xyz/rpy 时要同步改这里）。
+#   * **放置点/姿态不写在本文件**：由 frames.place（base_link -> place_target_01）动态 TF 提供，
+#     tools 发布器 place 段真机模板 (0.28,0.12,-0.014) 顶抓姿态；现场按容器位置取点后覆盖。
+#   * 每轮开始/结束都归零到折叠 rest（`ros2.home_joint_positions`，在 live_ros2.yaml）；
+#     回零时第 6 位 gripper 用实测关节角保持，不按配置值动爪。
+#   * 1.5 cm 方块 → 抓取宽度区间 [0.010, 0.022] m，闭合命令宽度 0.005 m
+#     （必须 < 区间下限 < 区间上限 < 张开宽度）。
+#
+# 可达性依据（2026-11-09 mock 栈 /compute_ik 实测，arm_stack hardware_type:=mock、真机几何）：
+#   顶抓参考姿态（D-047 滚转 180°）下：
+#   * grasp (0.28,0,-0.014) 与 post_grasp (0.26,0,0.05) 均 IK 可解（末点余量 0.20 rad），
+#     grasp→post_grasp 整条 1 cm 步进路径全部 IK OK（最小余量 0.19 rad）；
+#     从 z=0.06 起抬升路径余量只有 0.13 rad，z≥0.07 不可达，故 post_grasp z 定为 0.05。
+#   * 观察位姿 (0.241,0.0281,0.046)（= 抓取点 + offset + root +Z*0.06）IK 余量 0.28 rad
+#     （rest/zero 两种种子都 OK，相机正对方块）；随后 pregrasp IK 余量 0.33 rad。
+#   * place_target_01 默认点 (0.28,0.12,-0.014) IK OK（余量 0.05 rad，approach/lower/retreat
+#     路径全 OK）：连杆余量偏小但可行；现场按容器位置取点覆盖后必须重跑 `/compute_ik` 扫描。
+#   换现场标定 / 换物体位置 / 换容器位置时都必须重做这组扫描；方块必须放到发布器配置的位置。
+calibration_revision: so101-real-top-grasp-small15-x028-obs-high-wristroll-m150-v11
+field_validated: false
+cube_side_m: 0.015
+# Cube edge axes select horizontal alignment; gripper +Y is the closing axis.
+cube_axes_in_object_xyzw: [0, 0, 0, 1]
+tcp_to_gripper_rotation_xyzw: [0, 0, 0, 1]
+# No TCP-to-grasp-center assembly compensation for the real small cube: the
+# grasp_tcp_link origin is the fingertip contact point, so the commanded TCP is
+# the object-center top-grasp point.
+grasp_contact_offset_tcp_m: [0.0, 0.0, 0.0]
+# S6j（现场，用户反馈）：观察位锁定一次抓取位置（live_ros2_vision.yaml 的
+# lock_target_after_observation: true，关闭 pregrasp 校正）；手眼/夹爪的横向系统偏差用
+# 下面的固定偏移补偿。当前抓取位置基本正确，**向左移 1.5 cm** → base_link +Y = 机器人左侧。
+# 若现场方向相反，只需把符号改成 -0.015；偏移只作用于 vision grasp_target 规划，legacy 不受影响。
+grasp_target_offset_arm_m: [0.0, 0.020, 0.0]
+# S6b（2026-11-11，task-29）：抓取 reference/post_grasp 回到原顶抓**精确朝下** q0
+# （[0.7071067811865476, 0, -0.7071067811865476, 0]；旧 q0 分支 wrist_roll≈-1.62，接近用户
+# 观察用的 -1.5）。观察位单独用 live_ros2_vision.yaml 的高观察位（看全局）。折叠 rest 的
+# wrist_roll 保持 0（真机限位 [-2.74385, 2.84121]）；place 静态 TF 由 Lead 同步旋转。
+reference_tcp_orientation_root_xyzw: [0.7071067811865476, 0.0, -0.7071067811865476, 0.0]
+pregrasp_clearance_m: 0.03
+# D-094 observation view before the grasp: fixed reference top-grasp orientation and
+# a nominal wrist-camera mount offset so the downward camera centres the cube.
+observation_clearance_m: 0.06
+observation_offset_root_m: [-0.039, 0.0281, 0.0]
+gripper_open_m: 0.08
+gripper_closed_m: 0.005
+grasp_min_width_m: 0.010
+grasp_max_width_m: 0.022
+# 现场台面低于 base_link 原点（夹爪可到负 z），工作空间下限放宽到 -0.08
+workspace_min_m: [0.0, -0.3, -0.08]
+workspace_max_m: [0.6, 0.3, 0.6]
+# Retreat pose after the grasp: lift ~6.4 cm and pull back 2 cm, still TCP +X down.
+post_grasp_position_arm_m: [0.26, 0.0, 0.05]
+post_grasp_orientation_arm_xyzw: [0.7071067811865476, 0.0, -0.7071067811865476, 0.0]
+# D-048 place stage: the place pose itself comes from frames.place (TF
+# base_link -> place_target_01); only the approach/retreat clearances stay here:
+#   move_to_place_approach (same XY as place, +place_approach_clearance in arm +Z)
+#   -> lower_to_place -> release_gripper -> retreat_from_place (+retreat_clearance, root +Z).
+place_approach_clearance_m: 0.04
+place_retreat_clearance_m: 0.04
+# 仅旧行为（未配置 frames.place）使用的 post-grasp 保持时长；真机已配 place，不再插入 hold_object。
+hold_duration_s: 1.0

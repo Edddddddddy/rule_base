@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "so101-rule-base"
+version = "0.2.0"
+description = "SO-101 Pick station business core with a ROS 2 arm adapter"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "numpy>=1.24,<2.3",
+    "pydantic>=2.10,<3",
+    "pyyaml>=6,<7",
+    "typing-extensions>=4.12,<5",
+]
+
+[dependency-groups]
+lint = ["ruff>=0.11,<1"]
+dev = ["pytest>=8,<10", "mypy>=1.15,<2", "types-pyyaml>=6", {include-group = "lint"}]
+
+[project.scripts]
+so101-rule-base = "rule_base.interfaces.node:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rule_base"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/smoke"]
+markers = [
+    "integration: runs against a live ROS 2 graph, requires a sourced ROS 2 environment",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]

@@ -1,0 +1,15 @@
+task: pick
+fixture_only: true
+frames:
+  root: pick_place_left/world_link
+  arm_base: p7_base_link
+  object: objects_cube_01
+profile_file: profiles/object_grasp.yaml
+ros2:
+  base_frame: p7_base_link
+limits:
+  stable_time_s: 0.025
+  motion_stable_time_s: 0.025
+  servo_hz: 100
+  linear_speed_m_s: 1
+  stage_timeout_s: 2

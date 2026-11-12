@@ -1,0 +1,176 @@
+# SO-101 真机 / 真机栈 Pick 配置模板：ArUco 视觉目标 + 有界视觉伺服（T4/T5 现场用）。
+#
+# S6a（2026-11-11，用户确认）：抓取参考/后抓姿态的腕部绕 TCP 接近轴局部转 π（wrist_roll=π），
+#   让腕部相机从臂下翻到上方；reference/post_grasp 使用四元数
+#   [0.0, -0.7071067811865476, 0.0, -0.7071067811865476]；折叠 rest 保持 wrist_roll=0
+#   （真机 wrist_roll 硬件限位 [-2.74385, 2.84121]，π 不可达）。
+# S6b（2026-11-11，用户澄清）：wrist_roll≈-1.50 只是**观察时腕滚转参考**；观察位抬到
+#   高处看全局（FK 搜索 joints≈[0,-0.4,0.2,1.1,-1.5]，/compute_ik 已实测可达；相机世界
+#   z≈0.279、光轴朝下）。抓取 reference/post_grasp 仍用原顶抓精确朝下 q0；折叠 rest 保持 0。
+#
+# 与 live_ros2.yaml 的唯一区别：
+#   1) frames.grasp_target 配置后，抓取位姿直接取 `base_link → grasp_target_01`
+#      （视觉节点发布的「目标 TCP 在 ArUco 码坐标系下」位姿，经 objects_cube_01 链组合），
+#      不再走 cube-face 启发式；仍过既有顶抓姿态（TCP +X 朝下、+Y 水平）、workspace 与宽度校验。
+#   2) vision 段启用后，每轮在观察位与预抓取位各做一次离散视觉伺服校正（契约 §6.2）。
+#
+# 现场使用前提（真机安全红线见工作区 AGENTS.md §0，本轮只做离线/mock 验证）：
+#   1) 打印物体码 / 完成手眼标定 / 起视觉节点：见 tools/vision/README.md（T5 集成文档）。
+#         ros2 run ... aruco_target_publisher.py --config tools/configs/vision/objects.yaml
+#      视觉节点发布动态 TF：base_link→objects_cube_01、objects_cube_01→grasp_target_01，
+#      并提供 std_srvs/Trigger 服务 /vision/refresh_object_pose。
+#   2) 仍按 live_ros2.yaml 的前提起 follower bringup + move_group + `so101_arm_app backend:=real`；
+#      **不要**再起 tools/object_pose_publisher.py（它发的是静态/人工回填的 objects_cube_01，
+#      与视觉节点的动态父帧冲突，buffer 会明确报 conflicting TF parent/source）。
+#   3) 真机运动必须先 `enable_motion:=true`（服务端 D-015 默认只读），逐阶段人工确认；
+#      建议先 `--dry-run --transport ros2`（fake 不动臂 / 只读栈）验证 TF 与服务在线，
+#      再放开真机单轮。
+#   4) 视觉伺服只改 plan 目标，仍全部走 _send_servo 的 workspace 校验与服务端限速；
+#      max_corrections 达到仍超差 → 整轮明确失败（vision_alignment_incomplete），不盲目下探。
+#
+# mock 硬件联调补充（WP5.2b，仅 hardware_type:=mock）：服务端用
+#   mock_grasp_contact_angle_rad:=0.7767   # ↔ 0.0445 m 接触宽度（D-009: angle = width / k）
+#
+# 安全参数归属（D-015）：限速 / 单步增量 / 命令超时 / 使能开关都在服务端 so101_arm_app；
+# 这里只配置业务层的等待、判定与重试节奏，不替代服务端安全限速。
+task: pick
+fixture_only: true
+frames:
+  root: world
+  arm_base: base_link
+  object: objects_cube_01
+  # 视觉目标 TCP（ArUco 码坐标系下）在 base_link 下的位姿；由视觉节点动态 TF 提供。
+  # 配置后走视觉目标模式：grasp = 该 TCP 位姿，pregrasp = grasp + world +Z × clearance。
+  grasp_target: grasp_target_01
+  # 放置点动态 TF（base_link -> place_target_01）：视觉链路里由集成层
+  # station/integration/lib/place_target_publisher.py 读 object_pose_real.yaml 的 place 段
+  # 单独发布（D-118）；**不要**同时起 tools/object_pose_publisher.py（会与视觉节点抢
+  # objects_cube_01）。rule_base 只读 TF，不在本配置写放置坐标。
+  place: place_target_01
+vision:
+  # 启用有界视觉伺服：观察位 refresh → 预抓取位 refresh/校正（最多 max_corrections）。
+  # 关闭时行为与 live_ros2.yaml 完全一致（仍可用 frames.grasp_target 的 TCP 规划）。
+  enabled: true
+  # D-127：观察优先——折叠 rest 位不保证看得到物体，且 arm_app 顶抓门会拒绝非顶抓
+  # PlanRequest 种子；因此先到固定观察位，再 refresh 检测/规划。
+  # 起始阶段不要求物体/目标 TF；物体最好放在 base_link 下 x≈0.2–0.32 m、y≈±0.1 m。
+  observe_first: true
+  # S6b（task-32，用户现场手动摆出的最终高观察位）：
+  # joints≈{shoulder_pan:-0.046, shoulder_lift:0.049, elbow_flex:-0.318, wrist_flex:1.6536,
+  # wrist_roll:-1.428}；相机在上方/全局视野（多个 ArUco 可见，id1 reproj≈0.48px）；
+  # approach_tilt≈5.8°（< arm_app 顶抓门 20.1°），wrist_roll≈-1.43。
+  # 抓取 reference/post_grasp 不使用该姿态，仍为 task-29 的顶抓精确朝下 q0。
+  observe_position_arm_m: [0.24613, 0.015309, 0.109946]
+  observe_orientation_arm_xyzw: [0.740458356, 0.045132322, -0.668923796, 0.047174696]
+  # S6b（task-33，用户要求流程）：rest → **关节空间**到用户手动摆的观察位（肯定可达）
+  # → 取 TF 快照 → 抓取/放置。配置后 rule_base 在 home_start 后用关节流伺服到下列 5 臂关节
+  # （到达容差用 observe_joint_tolerance_rad=0.02 rad，比 home 0.08 更严；gripper 保持实测值），
+  # **跳过 observe_first_plan 的 TCP PlanRequest**（rest 种子 IK_FAILED -31），到达后直接
+  # refresh/锁定目标/规划；未配置时保持旧 IK 观察位路径。上两行 observe_position/orientation
+  # 保留作文档/记录值。
+  # S6h（现场）：wrist_flex 实测可达上限 ~**1.6536 rad**（URDF/校准限位）；原记录值 1.738
+  # 不可达 → 伺服饱和在 1.6536、误差恒 0.0843687 rad，0.02 容差永远达不到 →
+  # vision_observe_joints 超时。观察目标改用实测可达值以下。
+  observe_joint_positions: [-0.046, 0.0491, -0.3175, 1.6536, -1.4281]
+  # D-132：观察位多帧采样 + 稳定性筛选，确定本轮目标与初始规划。
+  # 单码 PnP 在 pregrasp 视角经常被夹爪/边缘遮挡而跳到错误分支（实测两次检测差 7.8 cm）；
+  # 观察位视野好，取 5 帧中位/四元数平均，超过 8 mm/0.03 rad 或 reproj>1.5 px 的帧丢弃。
+  # S6g（现场）：观察位必须**停稳 + 多次间隔采样确认 TF 稳定**后再锁定抓取。
+  # wrist_flex 曾残留 0.084 rad（≈4.8°）使相机倾斜，物体 TF 出现 ~2 cm 系统偏差；
+  # 因此观察关节到位容差收紧到 0.02 rad（比 home_tolerance_rad 0.08 更严），
+  # 到达后先 settle 1.0 s 再采样，5 次 refresh 之间间隔 0.2 s（等臂真正停稳）；
+  # 原有 median/spread（8 mm/0.03 rad）与 reprojection(1.5 px) 门保持不变。
+  observe_joint_tolerance_rad: 0.02
+  observe_settle_s: 1.0
+  observe_sample_interval_s: 0.2
+  # S6i/S6l（现场）：观察位刚到位时视觉节点的旧 coast 目标/平滑窗口尚未收敛。
+  # run 20261112-123821：首帧与后续 4 帧差 64 mm；run 20261112-131649：2 个 warmup + 第 1 个
+  # 正式样本仍是旧目标 x≈0.152（收敛后 x≈0.238），5 帧 spread 87 mm/0.203 rad 被稳定门拦下
+  # → 旧平滑清空 >0.4 s。因此 settle 1.0 s 后再丢弃 **4** 帧预热（不计入 median/spread/
+  # reproj 统计），再采 5 帧间隔 0.2 s 的稳定 TF；预热 refresh 失败不致命（采样帧仍过门）。
+  observe_warmup_samples: 4
+  observe_samples: 5
+  observe_stability_m: 0.008
+  # 真机单码 PnP 角度噪声实测：3 帧 angle_spread=0.020444 rad（translation 0.51 mm、
+  # reprojection 0.13–0.19 px 均很好）；0.02 会误杀正常观测，用户批准放宽到 0.03 rad
+  # （≈1.7°），仍拒绝明显跳变；平移 0.008 m 与 reprojection 1.5 px 门保持不变。
+  observe_stability_rad: 0.03
+  observe_max_reprojection_px: 1.5
+  # S6j（现场，用户决定）：**只在观察位观察并锁定一次抓取位置，关闭 pregrasp
+  # refresh/有界校正**（true = D-132 锁定行为）。横向系统偏差改由 profile 的
+  # `grasp_target_offset_arm_m` 固定补偿（real_pick.yaml 当前 [0, 0.020, 0] = base_link +Y
+  # 2 cm，机器人左侧；方向反了改符号）。
+  # S6k（S6j 后续，现场 run 20261112-130250）：pregrasp 近距离视觉也不可信，一致性校验
+  # 已关闭（见下面 grasp_verify_enabled: false）；下探到 grasp 后只用夹爪闭合宽度验证。
+  # 历史（S6f）：此前设 false 启用过 pregrasp refresh + max_corrections=2 的有界校正。
+  lock_target_after_observation: true
+  # D-134/S6e（历史）：曾在 pregrasp 位做一次检测确认（只做安全校验，不修正锁定目标）；
+  # grasp 位相机贴近/被夹爪遮挡，重检会误判，故校验曾移到 pregrasp。
+  # S6k（现场 run 20261112-130250，用户明确）：**只在观察位观察并确定一次抓取位置**。
+  # 观察 5 帧 spread 0.99 mm 很稳；但 pregrasp 近距离重检 z=+0.0936（与锁定差 101.5 mm）
+  # → GRASP_TARGET_MISMATCH，再次证明近距离 ArUco 位姿不可用。因此关闭 pregrasp 校验；
+  # 字段/代码保留（默认 true 不变，其他配置可重新打开）；抓取位仅用夹爪闭合宽度验证。
+  grasp_verify_enabled: false
+  grasp_verify_tolerance_m: 0.020
+  grasp_verify_tolerance_rad: 0.15
+  # std_srvs/Trigger；success=true 才代表本次新检测（失败 message 以错误码开头）。
+  refresh_service: /vision/refresh_object_pose
+  # refresh 服务 + 「等待新 TF 样本」的总时限（秒）；超时 → 整轮明确失败。
+  refresh_timeout_s: 3.0
+  # 预抓取位最多校正次数（1..3）；达到上限仍超差 → vision_alignment_incomplete。
+  max_corrections: 2
+  # 与 plan.grasp 比较的容差：|Δ平移| 与 |Δ旋转| 任一超差即触发一次校正。
+  position_tolerance_m: 0.006
+  orientation_tolerance_rad: 0.05
+  # 每次校正移动后、下一次 refresh 前的伺服保持静置时间（秒）；给腕部相机画面稳定。
+  correction_settle_s: 0.4
+profile_file: profiles/real_pick.yaml
+limits:
+  # 保守时序：20 Hz 目标刷新、1 cm 步进、5 cm/s 目标推进；到位判定放宽容差（真机弱扭矩/跟随滞后）。
+  servo_hz: 20
+  # S6b 真机时序容差（用户批准）：0.3 → 0.45 s。WSL/5V 串口链路偶发送抖动，
+  # 单次 servo 目标间隔可能 ~0.31s（`Servo refresh deadline missed`）；放宽到 450ms
+  # 仍 < arm_app command_timeout 500ms，超过 450ms 仍明确失败；不改安全限速
+  # （max_joint_velocity/step 等不变）。
+  servo_max_gap_s: 0.45
+  stable_time_s: 0.2
+  motion_stable_time_s: 0.2
+  motion_joint_velocity_rad_s: 0.02
+  linear_speed_m_s: 0.05
+  linear_step_m: 0.01
+  position_tolerance_m: 0.01
+  orientation_tolerance_rad: 0.1
+  stage_timeout_s: 10
+  warmup_timeout_s: 15
+  # TF 由视觉节点（20 Hz 动态）与 robot_state_publisher（关节流）共同提供，给足时效余量。
+  tf_age_s: 1.0
+  tf_skew_s: 0.2
+  tf_future_tolerance_s: 0.05
+  # 真机不做自动重试放大动作：一次抓取失败即停下，由人确认后重跑。
+  max_grasp_attempts: 1
+  grasp_confirmation_timeout_s: 2.0
+  recovery_feedback_timeout_s: 5.0
+  recovery_feedback_stable_time_s: 0.3
+  max_cube_tilt_rad: 0.2617993877991494
+  gripper_hold_hz: 5
+  gripper_effort: 8
+  # 每轮开始/结束归零（折叠 rest）：5 个臂关节误差 ≤ home_tolerance_rad 且持续
+  # motion_stable_time_s 视为到位；home_timeout_s 超时明确失败。
+  home_tolerance_rad: 0.08
+  home_timeout_s: 30
+arm:
+  acquire_control: true
+  manage_lease: true
+  # PlanRequest 内含 MoveIt /compute_ik（kinematics timeout 0.2 s × attempts），留足余量。
+  rpc_timeout_ms: 5000
+  cleanup_rpc_timeout_ms: 2000
+  feedback_timeout_s: 0.5
+  state_timeout_s: 2.0
+ros2:
+  prefix: /arm
+  base_frame: base_link
+  # p7 兼容顶抓帧（SO-101 的真实手指方向绕了一层固定旋转，见 so101_ee_common.xacro）
+  tcp_frame: grasp_tcp_link
+  # 每轮开始/结束归零的折叠 rest（D-094，rad）。第 6 位是夹爪：回零时用实测关节角
+  # 保持，不按这里的值动爪，所以该位仅作占位/文档。
+  home_joint_positions: [0.0, -1.52, 1.45, 0.75, 0.0, 0.0]

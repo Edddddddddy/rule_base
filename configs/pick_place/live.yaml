@@ -1,0 +1,34 @@
+# ROS 2 deployment template. The arm server publishes <prefix>/joint_states, TF
+# base_frame -> tcp_frame and <prefix>/state; it serves the four arm_msgs services.
+task: pick
+fixture_only: true
+frames:
+  root: world
+  arm_base: base_link
+  object: objects_cube_01
+profile_file: profiles/object_grasp.yaml
+limits:
+  stage_timeout_s: 20
+  warmup_timeout_s: 15
+  recovery_feedback_timeout_s: 3
+  recovery_feedback_stable_time_s: 0.2
+  grasp_confirmation_timeout_s: 1.5
+  max_grasp_attempts: 3
+  max_cube_tilt_rad: 0.2617993877991494
+  tf_age_s: 1.5
+  tf_skew_s: 1.5
+  tf_future_tolerance_s: 0.02
+  linear_step_m: 0.02
+  linear_speed_m_s: 0.05
+  stable_time_s: 0.5
+  servo_hz: 100
+arm:
+  acquire_control: true
+  manage_lease: true
+  rpc_timeout_ms: 8000
+  feedback_timeout_s: 0.5
+  state_timeout_s: 1.5
+ros2:
+  prefix: /arm
+  base_frame: base_link
+  tcp_frame: gripper_frame_link

@@ -1,0 +1,59 @@
+# Loopback configuration for tests/integration/test_ros2_loopback.py.
+# Frames match the mock server double; the profile keeps the ported Pick geometry
+# (TCP +X down, world vertical approach) so the same business code runs as in WP4.
+task: pick
+fixture_only: true
+frames:
+  root: world
+  arm_base: base_link
+  object: objects_cube_01
+  # Static place TF published by the mock server double (world -> place_target_01).
+  place: place_target_01
+profile:
+  calibration_revision: so101-ros2-loopback-v1
+  field_validated: false
+  cube_side_m: 0.05
+  cube_axes_in_object_xyzw: [0, 0, 0, 1]
+  tcp_to_gripper_rotation_xyzw: [0, 0, 0, 1]
+  grasp_contact_offset_tcp_m: [0.04, 0.0, 0.0]
+  reference_tcp_orientation_root_xyzw: [0, 0.7071067811865476, 0, 0.7071067811865476]
+  pregrasp_clearance_m: 0.1
+  # D-094 observation view: distinct from pregrasp so the stage is observable here.
+  observation_clearance_m: 0.15
+  gripper_open_m: 0.08
+  gripper_closed_m: 0.03
+  grasp_min_width_m: 0.034
+  grasp_max_width_m: 0.055
+  workspace_min_m: [0.1, -0.3, 0.05]
+  workspace_max_m: [0.9, 0.3, 0.8]
+  post_grasp_position_arm_m: [0.4, 0.0, 0.25]
+  post_grasp_orientation_arm_xyzw: [0, 0.7071067811865476, 0, 0.7071067811865476]
+  hold_duration_s: 0.3
+limits:
+  stable_time_s: 0.05
+  motion_stable_time_s: 0.05
+  servo_hz: 50
+  servo_max_gap_s: 0.5
+  linear_step_m: 0.05
+  linear_speed_m_s: 1.0
+  stage_timeout_s: 20
+  warmup_timeout_s: 15
+  grasp_confirmation_timeout_s: 1.5
+  max_grasp_attempts: 1
+  home_tolerance_rad: 0.05
+  home_timeout_s: 10
+  tf_age_s: 1.0
+  tf_skew_s: 0.2
+  tf_future_tolerance_s: 0.05
+arm:
+  acquire_control: true
+  manage_lease: true
+  rpc_timeout_ms: 5000
+  feedback_timeout_s: 0.5
+  state_timeout_s: 1.5
+ros2:
+  prefix: /arm
+  base_frame: base_link
+  tcp_frame: gripper_frame_link
+  # Non-zero folded rest: the mock double tracks streamed arm joint commands.
+  home_joint_positions: [0.0, -1.52, 1.45, 0.75, 0.0, 0.0]

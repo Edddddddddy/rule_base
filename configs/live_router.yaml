@@ -1,0 +1,5 @@
+# Deployment router resolved by the STATION_TYPE environment variable that the
+# inference manager injects at launch. The repo owns the mapping; the manager
+# stays ignorant of station config paths. Values are relative to this file.
+by_station:
+  pick_place: pick_place/live.yaml
