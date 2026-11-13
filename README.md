@@ -187,8 +187,9 @@ python3 -m pytest tests/unit tests/smoke -q          # 离线单元/冒烟（含
 python3 -m pytest tests/integration/test_ros2_loopback.py -q -s
                                                      # 隔离 domain 上跑 ROS2 适配器回环（mock 服务端；1 passed）
 
-# 实例模式 E2E（需 mock 接口覆盖层；与 station_support 的 229 集成测串行执行，避免 TF 父帧冲突）
-source /home/ubuntu/yayyrobotics/tools/mocks/ros2_ws/install/setup.bash
+# 实例模式 E2E（需 S2 接口覆盖层；先 bash /home/ubuntu/yayyrobotics/inference_manager/scripts/build_ros2_interfaces.sh）
+# 与 station_support 的 229 集成测串行执行，避免 TF 父帧冲突
+source /home/ubuntu/yayyrobotics/inference_manager/outputs/ros2-interfaces/install/setup.bash
 python3 -m pytest tests/integration/test_instance_entry.py -q -s
 ```
 

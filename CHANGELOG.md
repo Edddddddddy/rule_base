@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **2026-11-13 · v0.7 tools/ 废除：mock 夹具消费路径 env 化 + 实例 E2E 对齐 contracts R14（仅测试/文档，业务代码零改动）**：
+  - `tests/integration/instance_e2e_support.py`：`FAKE_MANAGER` 改为 `MOCK_FIXTURES_DIR`（默认
+    `<ws>/factory_manager/local/integration/mocks`；缺失时 `pytest.skip` 并给修复命令），不再写死顶层 `tools/mocks`；
+    `test_instance_entry.py` 的接口覆盖层改 source `<ws>/inference_manager/outputs/ros2-interfaces/install/setup.bash`
+    （`inference_manager_msgs` 唯一 owner）。
+  - **修既有测试漂移**：S1 实例 E2E 在 contracts v1.2 **R14**（`manage_lease:false` 轮末保持 SERVO(3)、由 FM 统一
+    `switch_idle`）落地后仍按"轮末 3→0"断言，迁移前即红 → 测试改为每轮只切 `IDLE(0)` 作为租约保持证据（下一轮 entry
+    子进程自行 0→3）；**断言强度不变**，只移除 R14 下非法的 3→3 调用。`docs/instance-mode.md`、`README.md` 同步。
+  - 验证：`tests/unit tests/smoke` → 484 passed；实例 E2E（domain 229）→ 1 passed；真机未验证。
 - **2026-11-13 · S5 集成小修：`arm.manage_lease:false` 时轮末不再 `switch_state(0)`（contracts v1.2 R14，mock 全栈证据）**：
   - **问题**：S5 全栈 mock E2E 实测，实例配置 `manage_lease:false`（租约/状态机由 factory_manager 持有）时，
     每轮结束 `PickRound` 清理调用 `arm.stop()`，原逻辑在 `acquire_control:true` 下会 `switch_state(0)`；

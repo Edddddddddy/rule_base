@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """S1 integration-test wrapper: run the repository's real instance entry as a mock instance.
 
-``tools/mocks/fixtures/fake_inference_manager.py --instance-script <path>`` spawns the
+``factory_manager/local/integration/mocks/fake_inference_manager.py --instance-script <path>``
+(mock fixtures 单点 owner；其他仓库经 ``MOCK_FIXTURES_DIR`` 消费) spawns the
 given script as ``[sys.executable, <path>]`` and only injects the contracts §1.2
 environment variables. This wrapper therefore pins this checkout's ``src`` at the front
 of ``sys.path`` (the machine also has an editable ``so101-rule-base`` install pointing

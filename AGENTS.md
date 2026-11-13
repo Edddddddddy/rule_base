@@ -7,7 +7,7 @@
 ## 1. 本子仓库在 I2 下的定位与附加边界
 
 - **负责**：SO-101 数采工站的业务内核（Pick 站：顶抓规划/执行/观察位姿/每轮起止归零/完整 place）+ L3 ROS 2 适配器（`infrastructure/ros2/`）。公司 `rule_base` 移植版：已删 CORA，**不使用 CORA**，不重新引入原生 wheel / CORA manifest / CORA 专属 topic。
-- **绝不负责**：环境 reset、初始位姿、物体摆放与业务结果判定（上游负责）；相机识别；L6 采集/质检/策略与 L7 CLI；不碰 L2 ros2_control/MoveIt，不改 `ros2_ws/src/**`（I0 上游只经 `tools/patches/` 重放）。
+- **绝不负责**：环境 reset、初始位姿、物体摆放与业务结果判定（上游负责）；相机识别；L6 采集/质检/策略与 L7 CLI；不碰 L2 ros2_control/MoveIt，不改 `ros2_ws/src/**`（I0 上游只经 `so101-ros-physical-ai/patches/` 重放）。
 - **对外只提供**：`python3 -m rule_base.interfaces.node` CLI + JSONL 事件流 + 稳定 Python API（见 [README](README.md)、[station api](../api.md) §4/§6）；ROS 侧只经 `infrastructure/ros2/` 消费 L1 `/arm/*` 与 TF。
 - **开发约定**：Python 遵循 `pyproject.toml`（Ruff 行宽 100、`requires-python >=3.10,<3.14`、mypy strict）；新增/修改生产函数补类型注解；只补与行为有关的回归测试。
 

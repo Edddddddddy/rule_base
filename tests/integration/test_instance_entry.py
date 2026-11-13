@@ -3,15 +3,18 @@
 Scenario (contracts §2 / §9, 03 plan §3):
 
 1. start ``tests/integration/ros2_mock_arm.py`` (arm double with authority/lease);
-2. the test harness plays factory_manager: acquires the arm lease, then starts the S0
-   ``fake_inference_manager.py --instance-script tests/integration/instance_entry_mock.py``;
+2. the test harness plays factory_manager: acquires the arm lease, then starts the FM-owned
+   mock ``fake_inference_manager.py --instance-script tests/integration/instance_entry_mock.py``
+   (single owner: ``<ws>/factory_manager/local/integration/mocks/``);
 3. launch with a positive timeout / ``pick_place`` -> ready contains the id -> the real
    entry publishes ``/inference/stopped=True`` (2 Hz, transient_local);
 4. three rounds: harness drives ``/env/reset_status`` False (>=0.6 s level) -> True and
    asserts ``stopped`` goes False (round start) then True (round end, child exited);
 5. after every round the harness waits >5 s (arm lease timeout) and then calls
-   ``/arm/switch_state`` 3 -> 0: both must succeed, proving the entry keepalive kept the
-   lease alive while idle (the child's own traffic stopped when it exited);
+   ``/arm/switch_state(0)``: it must succeed, proving the entry keepalive kept the lease
+   alive while idle (the child's own traffic stopped when it exited). contracts R14:
+   with ``manage_lease:false`` the instance keeps SERVO(3) at round end and the next
+   round's entry re-enters SERVO from IDLE, so the harness only switches IDLE here;
 6. the idle ``/arm/joint_command`` hold stream is ~2-5 Hz and carries the latest measured
    ``/arm/joint_states`` positions (gripper held);
 7. after round 3 a sustained True level for 2 s must not start a round (edge semantics);
@@ -26,7 +29,8 @@ Usage:
     export ROS_DOMAIN_ID=229
     source ros2_ws/setup_ros_env.sh
     export PYTHONPATH=/home/ubuntu/yayyrobotics/rule_base/src:$PYTHONPATH
-    source tools/mocks/ros2_ws/install/setup.bash     # inference_manager_msgs mock overlay
+    source /home/ubuntu/yayyrobotics/inference_manager/outputs/ros2-interfaces/install/setup.bash
+                                                      # inference_manager_msgs（IM 唯一 owner；先 bash scripts/build_ros2_interfaces.sh）
     cd rule_base
     python3 -m pytest tests/integration/test_instance_entry.py -q -s
 """
@@ -71,6 +75,7 @@ from instance_e2e_support import (  # noqa: E402
     pid_desc,
     prime_lease,
     publish_for,
+    require_mock_fixtures,
     round_transitions,
     run_round,
     spawn,
@@ -98,7 +103,8 @@ def _require_ros2() -> None:
             "ROS 2 / mock overlay not sourced: "
             "export ROS_DOMAIN_ID=229 && source ros2_ws/setup_ros_env.sh && "
             "export PYTHONPATH=/home/ubuntu/yayyrobotics/rule_base/src:$PYTHONPATH && "
-            f"source tools/mocks/ros2_ws/install/setup.bash ({exc})"
+            "source /home/ubuntu/yayyrobotics/inference_manager/outputs/ros2-interfaces/install/setup.bash"
+            f"（接口缺失时先 bash scripts/build_ros2_interfaces.sh；{exc}）"
         )
 
 
@@ -133,7 +139,7 @@ def test_instance_entry_three_rounds_keepalive_and_sigterm(tmp_path):
     _require_domain_229()
     assert MOCK_ARM.is_file(), MOCK_ARM
     assert WRAPPER.is_file(), WRAPPER
-    assert FAKE_MANAGER.is_file(), FAKE_MANAGER
+    require_mock_fixtures()
     assert INSTANCE_CONFIG.is_file(), INSTANCE_CONFIG
 
     import rclpy
@@ -333,7 +339,7 @@ def test_instance_entry_three_rounds_keepalive_and_sigterm(tmp_path):
                 print(
                     f"[it] round#{round_number} ok: stopped False->True in "
                     f"{result['duration_s']:.1f}s; idle hold ~{result['hold_hz']:.1f} Hz; "
-                    "lease switch_state(3)->(0) succeeded after >5 s idle"
+                    "lease switch_state(0) succeeded after >5 s idle (R14: keep SERVO)"
                 )
             evidence["rounds"] = round_evidence
             assert round_transitions(stopped) == 3, (

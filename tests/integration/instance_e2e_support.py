@@ -22,7 +22,15 @@ ROOT = Path(__file__).resolve().parents[2]  # rule_base/
 WORKSPACE = ROOT.parent  # yayyrobotics/
 MOCK_ARM = ROOT / "tests/integration/ros2_mock_arm.py"
 WRAPPER = ROOT / "tests/integration/instance_entry_mock.py"
-FAKE_MANAGER = WORKSPACE / "tools/mocks/fixtures/fake_inference_manager.py"
+#: mock fixtures 单点 owner（P5 迁移后）= <ws>/factory_manager/local/integration/mocks/；
+#: 其他仓库只经 MOCK_FIXTURES_DIR 只读消费，不复制副本（contracts R3）。
+MOCK_FIXTURES_DIR = Path(
+    os.environ.get(
+        "MOCK_FIXTURES_DIR",
+        str(WORKSPACE / "factory_manager" / "local" / "integration" / "mocks"),
+    )
+)
+FAKE_MANAGER = MOCK_FIXTURES_DIR / "fake_inference_manager.py"
 INSTANCE_CONFIG = ROOT / "configs/pick_place/mock_ros2_instance.yaml"
 
 DOMAIN_ID = 229
@@ -44,6 +52,22 @@ ROUND_TIMEOUT_S = 180.0
 LEASE_TIMEOUT_S = 5.0  # ros2_mock_arm.py LEASE_TIMEOUT_S
 
 pytestmark = pytest.mark.integration
+
+MOCK_FIXTURES_FIX = (
+    "mock fixtures 缺失（{}）：单点 owner 在 "
+    "<ws>/factory_manager/local/integration/mocks/；修复: "
+    "export MOCK_FIXTURES_DIR=/home/ubuntu/yayyrobotics/factory_manager/local/integration/mocks"
+    "（或 git -C /home/ubuntu/yayyrobotics/factory_manager checkout -- local/integration/mocks）"
+)
+
+
+def require_mock_fixtures() -> Path:
+    """校验 mock fixtures（FM 单点 owner）完整；缺失时 skip 并给修复命令。"""
+    required = ("fake_inference_manager.py", "fake_instance.py", "common.py")
+    missing = [name for name in required if not (MOCK_FIXTURES_DIR / name).is_file()]
+    if missing:
+        pytest.skip(MOCK_FIXTURES_FIX.format(MOCK_FIXTURES_DIR) + f"；缺失: {missing}")
+    return MOCK_FIXTURES_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -516,13 +540,16 @@ def run_round(
     spin(node, 1.0)
     rate = assert_hold_stream(joint_command, joint_states, hold_start, round_number)
 
-    # Wait beyond the 5 s arm lease timeout with no other publisher: a switch to SERVO
-    # then IDLE only succeeds if the entry keepalive refreshed the lease meanwhile.
+    # Wait beyond the 5 s arm lease timeout with no other publisher: a switch to IDLE
+    # only succeeds if the entry keepalive refreshed the lease meanwhile.
+    # contracts R14（manage_lease:false）：实例轮末保持 SERVO(3)、由 FM 统一 switch_idle，
+    # 所以这里只切 IDLE(0)；切回 SERVO(3) 留给下一轮 entry 子进程启动时自己 0->3 完成
+    # （若在此切回 3，下一轮 entry 的 switch(3) 会变成 3->3 非法）。
     idle_deadline = round_started_at + duration + LEASE_TIMEOUT_S + 0.6
     remaining = idle_deadline - time.monotonic()
     if remaining > 0:
         spin(node, remaining)
-    for state_id in (3, 0):
+    for state_id in (0,):
         response = call_service(
             node,
             switch_client,

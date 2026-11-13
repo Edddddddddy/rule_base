@@ -99,8 +99,9 @@ python3 -m rule_base.instance.entry --config configs/pick_place/mock_ros2_instan
   `<prefix>/joint_states` 位置（**夹爪保持**，不改变目标姿态）。无实测样本/样本不完整时跳过该周期。
 - **子进程运行期间严格停发**，避免与 rule_base 自身动作流量抢写；本轮结束后恢复。
 - 该流量用于 arm_app "先续租、再判门控"（contracts §2 D4）：5 s 无流量会掉租约。
-- 集成测每轮结束后**等超过 5 s**（无其它发布者）再调 `/arm/switch_state(3)`→`(0)`，
-  两次 `success=true` 直接证明 keepalive 期间租约未丢。
+- 集成测每轮结束后**等超过 5 s**（无其它发布者）再调 `/arm/switch_state(0)`（切 IDLE 需有效租约），
+  `success=true` 直接证明 keepalive 期间租约未丢。`manage_lease:false`（contracts R14）下实例轮末
+  保持 SERVO(3)、由 FM 统一 switch_idle，下一轮 entry 子进程启动时再从 IDLE 切回 SERVO。
 
 ## 7 单轮子进程（runner）
 
@@ -151,13 +152,14 @@ cd /home/ubuntu/yayyrobotics
 export ROS_DOMAIN_ID=229                                   # contracts §8 S1 登记域；0 禁用
 source ros2_ws/setup_ros_env.sh
 export PYTHONPATH=/home/ubuntu/yayyrobotics/rule_base/src:$PYTHONPATH
-source tools/mocks/ros2_ws/install/setup.bash              # inference_manager_msgs mock 覆盖层（最后 source）
+source /home/ubuntu/yayyrobotics/inference_manager/outputs/ros2-interfaces/install/setup.bash
+                                                           # inference_manager_msgs（IM 唯一 owner；最后 source）
 cd rule_base
 python3 -m pytest tests/integration/test_instance_entry.py -q -s
 ```
 
 测试用既有资产（只读，不改）：`tests/integration/ros2_mock_arm.py`（arm 双 + 租约）、
-`tools/mocks/fixtures/fake_inference_manager.py --instance-script tests/integration/instance_entry_mock.py`
+`factory_manager/local/integration/mocks/fake_inference_manager.py --instance-script tests/integration/instance_entry_mock.py`
 （真实 entry 通过包装脚本被拉起）。断言：ready/stopped 时序、3 轮 reset 边沿、每轮 >5 s 空闲后
 switch_state 3→0 成功（keepalive 续租证据）、hold 频率 2–5 Hz 且位置=实测、持续 True 不重开轮、
 stop 后 entry exit 0、SIGTERM manager exit 0、无残留进程。
