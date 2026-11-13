@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **2026-11-13 · S5 集成小修：`arm.manage_lease:false` 时轮末不再 `switch_state(0)`（contracts v1.2 R14，mock 全栈证据）**：
+  - **问题**：S5 全栈 mock E2E 实测，实例配置 `manage_lease:false`（租约/状态机由 factory_manager 持有）时，
+    每轮结束 `PickRound` 清理调用 `arm.stop()`，原逻辑在 `acquire_control:true` 下会 `switch_state(0)`；
+    FM 运行期以 `/arm/state=SERVO(3)` 监控租约，轮末被切 IDLE 会误判 `AUTHORITY_LOST(2003)` 并终止任务。
+  - **修复**：`src/rule_base/infrastructure/ros2/arm_topic.py::stop()` 增加 `manage_lease:false` 早退分支：
+    只清本地会话标志、**不切 IDLE**（保持 SERVO(3)），由 FM 在任务结束/失败清理时统一
+    `switch_idle → release`（contracts §3 停止顺序）；`manage_lease:true`（独立运行）行为不变。
+  - **验证**：S5 全栈 mock（domain 198，arm_app mock 后端 + 真实 S2/S3/S4）任务 3 轮 `COMPLETED`、
+    cleanup 8 步全 success、无残留；`tests/unit` 全量回归通过。真机未验证（真机 Gate 由 S5 另行授权执行）。
+  - **边界**：不改 wire/接口/业务内核其他逻辑；不影响 `manage_lease:true` 的单机运行语义。
 - **2026-11-13 · 新增 026 实例入口（S1 实例化改造 RB-P1/P2，mock/本机证据）**：
   - **背景**：inference manager 需要按 026 协议拉起算法程序；原仓库只有站侧 CLI。业务内核
     （`application/stations/infrastructure/config`）**零改动**，入口每轮调用原 CLI 跑一轮。

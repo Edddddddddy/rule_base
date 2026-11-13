@@ -263,6 +263,13 @@ class Ros2ArmTopic:
             return
         if not self._servo_requested:
             return
+        if not self.settings.arm.manage_lease:
+            # S5 集成补丁（contracts D1/D5）：租约与臂状态机由 factory_manager 持有
+            # （manage_lease:false）；本轮结束不得把臂切回 IDLE，否则 FM 的
+            # /arm/state=SERVO(3) 监控会误判 AUTHORITY_LOST（且下一轮需重新切 SERVO）。
+            # 保持 SERVO(3)，由 FM 在任务结束时统一 stop→switch_idle→release（§3）。
+            self._servo_requested = False
+            return
         request = SwitchState.Request()
         request.state_id = IDLE_STATE_ID
         response = self._call("switch", request, cleanup=True)
