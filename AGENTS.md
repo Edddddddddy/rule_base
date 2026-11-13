@@ -24,12 +24,12 @@
 |---|---|
 | 写入范围 | 仅 `station/rule_base_ros2/`（`src/`、`configs/`、`tests/`、`docs/`）；子包目录不越界 |
 | 跨仓库读/接口 | 经 `infrastructure/ros2/` 调 L1 `/arm/*` + TF；消费 L0 `arm_msgs`；不 import 兄弟仓库源码；供 `station/integration` 编排调用 |
-| 运行时 domain | 离线 fake 无 domain；ROS 回环 **231**；真机 **0** 只在授权窗口（见根 §0）；Fast DDS ≤232 |
+| 运行时 domain | 离线 fake 无 domain；ROS 回环/mock 用 **229**（contracts §8 S1 登记域）；真机 **0** 只在授权窗口（见根 §0）；Fast DDS ≤232 |
 | 环境 | 系统 python（不建 venv；PEP 668：`pip install --user --break-system-packages --no-deps -e .`） |
 | 数据/产物 | 不写数据面；日志/证据由调用方收集；checkpoint、`data/`、`policies/` 不入库 |
 | git | 随 `station/` git 仓库（无独立仓库）；只操作本子仓库；不改/不暂存用户 WIP；**Lead 统一提交** |
 
-- ROS 回环用隔离 domain **231**（[docs/develop.md](docs/develop.md) §4）；同一 domain 不重复发布相同 child frame；残留 `/dev/shm/fastrtps_*` 先确认无存活节点再清（[station develop](../develop.md) §7.3）。
+- ROS 回环用隔离 domain **229**（contracts §8 S1 登记域；[docs/develop.md](docs/develop.md) §4）；同一 domain 不重复发布相同 child frame；残留 `/dev/shm/fastrtps_*` 先确认无存活节点再清（[station develop](../develop.md) §7.3）。
 
 ## 4. 不可放宽的硬约束（仓库专属，只能更严）
 
@@ -42,9 +42,9 @@
 
 ## 5. 验证入口（改什么 → 必跑什么 + 文档出处；环境/命令以文档为准）
 
-- 环境：系统 python（不建 venv）；首次 `source /home/ubuntu/discover/ros2_ws/setup_ros_env.sh` → `pip install --user --break-system-packages --no-deps -e .`（[README](README.md) §环境）。
+- 环境：系统 python（不建 venv）；`export ROS_DOMAIN_ID=229` → `source /home/ubuntu/yayyrobotics/ros2_ws/setup_ros_env.sh`；本机 editable install 指向旧副本，运行/测试前置 `PYTHONPATH=<repo>/src:$PYTHONPATH`（[README](README.md) §环境）。
 - 行为改动：`python3 -m pytest tests/unit tests/smoke -q`（离线单测 + 冒烟，见 [README](README.md) §测试）。
-- ROS 适配/装配改动：另跑 `ROS_DOMAIN_ID=231 python3 -m pytest tests/integration/test_ros2_loopback.py -q`；必要时 `bash ../integration/run_mock_chain.sh --rounds 10`（mock 全链路，[station develop](../develop.md) §2.1）。
+- ROS 适配/装配改动：另跑 `ROS_DOMAIN_ID=229 python3 -m pytest tests/integration/test_ros2_loopback.py -q`；必要时 `bash ../integration/run_mock_chain.sh --rounds 10`（mock 全链路，[station develop](../develop.md) §2.1）。
 - 1000 行拆分后：同上单测/冒烟 + 涉 L3 时跑 mock 全链路（根 §1、本文件 §2）。
 - 真机 `--run`：只在根 §0 授权窗口执行，不重复索要会话内授权；交付简述改了什么、跑了什么、未验证范围。
 

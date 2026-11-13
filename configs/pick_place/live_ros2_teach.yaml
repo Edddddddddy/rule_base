@@ -1,0 +1,103 @@
+# SO-101 真机 teach-point 实例配置（D10；vision.enabled:false，静态 teach-point TF）。
+# 与 live_ros2.yaml 的区别：
+#   1) frames.grasp_target: grasp_target_01（静态 TF，由 arm_stack 的 extra_launch_file 加载
+#      station_support 启动项提供 base_link -> {objects_cube_01, grasp_target_01, place_target_01}）；
+#   2) vision.enabled: false（不依赖相机/视觉节点/refresh 服务；每轮人工摆件后由 FM 触发复位）；
+#   3) arm.manage_lease: false（D5：租约由 factory_manager 持有；实例入口空闲期发 hold 心跳续租）。
+# 真机使用前提：arm_stack 已起 follower/move_group/arm_app，enable_motion 显式使能，用户在场。
+# 生成时间：2026-11-13（S1）；契约：docs/plan/contracts.md §2/§3 + docs/plan/05。
+#
+# SO-101 真机 / 真机栈（arm_app backend:=real）Pick 配置模板（WP5）。
+#
+# 使用前提（详见 docs/ros2-adapter.md §7）：
+#   1) 同一 launch 已起 follower bringup + move_group + `so101_arm_app backend:=real`；
+#      先用 `hardware_type:=mock` 验证逻辑，再切 `hardware_type:=real`（D-016）。
+#   2) arm_app 的静态 TF 参数必须与本配置几何一致（WP5.2b 起由 arm_stack.launch.py 参数暴露）：
+#        static_world_to_base_xyz:=[0,0,0] static_world_to_base_quat_xyzw:=[0,0,0,1]（world 与 base 对齐）
+#      F-013 起 arm_app 已删除 object_frame / static_object_xyz / static_object_quat_xyzw（不再发
+#      base→object 静态 TF）；物体 TF 由独立于 rule_base 的发布器提供动态 TF：
+#        python3 ~/discover/tools/object_pose_publisher.py \
+#            --config ~/discover/tools/configs/object_pose_real.yaml
+#      （该 YAML 配置 parent_frame/child_frame/position_m/orientation_xyzw/publish_rate_hz；
+#        现场用 /arm/tcp_pose 取点回填）；rule_base 只读 frames.object（base_link→objects_cube_01）。
+#      真机没有感知：**人工必须把1.5cm 小方块手动放到 tools 配置的 position_m（模板 (0.28, 0, -0.03)）这个可达位置**，
+#      或现场用 /arm/tcp_pose 取点回填 tools 配置并同步复核 profiles/real_pick.yaml 的 IK 可达性。
+#      该占位是 2026-11-05 用 /compute_ik 扫描挑出的可达点（grasp/pregrasp/下探链/post_grasp 余量 ≥0.54 rad）。
+#   3) 真机运动必须先 `enable_motion:=true`（服务端 D-015 默认只读），并且每个测试阶段之间人工确认。
+#
+# mock 硬件联调补充（WP5.2b，仅 hardware_type:=mock）：服务端用
+#   mock_grasp_contact_angle_rad:=0.7767   # ↔ 0.0445 m 接触宽度（D-009: angle = width / k）
+# 模拟夹爪接触，否则空载合爪反馈恒为命令宽度、抓取确认必然失败（见 docs/ros2-adapter.md §7）。
+#
+# 安全参数归属（D-015）：限速 / 单步增量 / 命令超时 / 使能开关都在服务端 so101_arm_app；
+# 这里只配置业务层的等待、判定与重试节奏，不替代服务端安全限速。
+task: pick
+fixture_only: true
+frames:
+  root: world
+  arm_base: base_link
+  object: objects_cube_01
+  # 真机 teach-point（D10）：静态抓取目标 TCP，由 station_support 启动项发布
+  # base_link -> grasp_target_01（配套 objects_cube_01 / place_target_01 静态 TF）。
+  grasp_target: grasp_target_01
+  # 放置点动态 TF（base_link -> place_target_01），由 tools/object_pose_publisher.py 的
+  # place 段发布；rule_base 只读 TF，不在本配置写放置坐标。配置后本轮走完整 place 阶段。
+  place: place_target_01
+vision:
+  # teach-point 模式：关闭有界视觉伺服；抓取位姿直接取静态 grasp_target TF。
+  enabled: false
+profile_file: profiles/real_pick.yaml
+limits:
+  # 保守时序：20 Hz 目标刷新、1 cm 步进、5 cm/s 目标推进；到位判定放宽容差（真机弱扭矩/跟随滞后）。
+  servo_hz: 20
+  # S6b 真机时序容差（用户批准）：0.3 → 0.45 s。WSL/5V 串口链路偶发送抖动，
+  # 单次 servo 目标间隔可能 ~0.31s（`Servo refresh deadline missed`）；放宽到 450ms
+  # 仍 < arm_app command_timeout 500ms，超过 450ms 仍明确失败；不改安全限速
+  # （max_joint_velocity/step 等不变）。
+  servo_max_gap_s: 0.45
+  stable_time_s: 0.2
+  motion_stable_time_s: 0.2
+  motion_joint_velocity_rad_s: 0.02
+  linear_speed_m_s: 0.05
+  linear_step_m: 0.01
+  position_tolerance_m: 0.01
+  orientation_tolerance_rad: 0.1
+  stage_timeout_s: 10
+  warmup_timeout_s: 15
+  # TF 由 robot_state_publisher 计算（joint_states 50 Hz），给足时效余量。
+  tf_age_s: 1.0
+  tf_skew_s: 0.2
+  tf_future_tolerance_s: 0.05
+  # 真机不做自动重试放大动作：一次抓取失败即停下，由人确认后重跑。
+  max_grasp_attempts: 1
+  grasp_confirmation_timeout_s: 2.0
+  recovery_feedback_timeout_s: 5.0
+  recovery_feedback_stable_time_s: 0.3
+  max_cube_tilt_rad: 0.2617993877991494
+  gripper_hold_hz: 5
+  gripper_effort: 8
+  # 每轮开始/结束归零（折叠 rest）：5 个臂关节误差 ≤ home_tolerance_rad 且持续
+  # motion_stable_time_s 视为到位；home_timeout_s 超时明确失败（真机 20 Hz 关节流 +
+  # 服务端 max_joint_step_rad 钳位，从工作位收敛到 rest 需要时间，留足余量）。
+  home_tolerance_rad: 0.08
+  home_timeout_s: 30
+arm:
+  acquire_control: true
+  manage_lease: false
+  # PlanRequest 内含 MoveIt /compute_ik（kinematics timeout 0.2 s × attempts），留足余量。
+  rpc_timeout_ms: 5000
+  cleanup_rpc_timeout_ms: 2000
+  feedback_timeout_s: 0.5
+  state_timeout_s: 2.0
+ros2:
+  prefix: /arm
+  base_frame: base_link
+  # p7 兼容顶抓帧（SO-101 的真实手指方向绕了一层固定旋转，见 so101_ee_common.xacro）
+  tcp_frame: grasp_tcp_link
+  # 每轮开始/结束归零的折叠 rest（D-094，rad）。第 6 位是夹爪：回零时用实测关节角
+  # 保持，不按这里的值动爪，所以该位仅作占位/文档。
+  # S6a：腕部 180° 只用于**动作/观测姿态**（见 profiles/real_pick.yaml 与
+  # live_ros2_vision.yaml 的 observe_orientation）；折叠 rest 保持 wrist_roll=0。
+  # 真机 wrist_roll 硬件限位 [-2.74385, 2.84121]（约 ±162.8°），π 不可达 → 不能写 π，
+  # 否则 home_start 会停在 2.842 限位并超时报错（真机首采已实测）。
+  home_joint_positions: [0.0, -1.52, 1.45, 0.75, 0.0, 0.0]

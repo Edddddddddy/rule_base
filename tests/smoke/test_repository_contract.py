@@ -31,8 +31,11 @@ def test_no_source_file_references_cora():
 
 
 def test_no_cora_payload_directories_remain():
-    for relative in ("deps", "packages", "uv.lock", "configs/drawer", "configs/press"):
+    for relative in ("deps", "packages", "configs/drawer", "configs/press"):
         assert not (ROOT / relative).exists(), f"{relative} must be removed by the port"
+    # S1: submission.yaml runtime.kind=uv requires a committed uv.lock (03 plan), so the
+    # old port-cleanup rule "uv.lock must not exist" no longer applies.
+    assert (ROOT / "uv.lock").is_file(), "uv.lock must exist for runtime.kind=uv (submission.yaml)"
 
 
 def test_pyproject_has_no_native_dependency():
@@ -47,11 +50,27 @@ def test_every_declared_config_loads():
         ROOT / "configs/pick_place/offline.yaml",
         ROOT / "configs/pick_place/live.yaml",
         ROOT / "configs/pick_place/live_ros2.yaml",
+        # S1 instance-mode configs (03/05 plans): all must stay loadable.
+        ROOT / "configs/pick_place/live_ros2_vision_instance.yaml",
+        ROOT / "configs/pick_place/live_ros2_teach.yaml",
+        ROOT / "configs/pick_place/mock_ros2_instance.yaml",
     ]
     for config in configs:
         settings = load_settings(config)
         assert settings.task == "pick"
         assert settings.ros2.prefix == "/arm"
+
+
+def test_instance_configs_disable_lease_management():
+    """D5/contracts §2: instance configs keep acquire_control but never manage the lease."""
+    for name in (
+        "mock_ros2_instance.yaml",
+        "live_ros2_vision_instance.yaml",
+        "live_ros2_teach.yaml",
+    ):
+        settings = load_settings(ROOT / "configs/pick_place" / name)
+        assert settings.arm.acquire_control is True, name
+        assert settings.arm.manage_lease is False, name
 
 
 def test_router_targets_an_existing_pick_config():

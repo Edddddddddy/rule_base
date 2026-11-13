@@ -17,6 +17,7 @@ L3 ROS 2 适配 / L4 业务内核 / L5 站编排 / L6 采集·质检·策略 / L
 | 公共 | TF 缓冲、刚体数学、Pick 观测缓存、JSON 事件 | `infrastructure/transform/`、`observability/` |
 
 详细 ROS 2 接口与参数见 [docs/ros2-adapter.md](docs/ros2-adapter.md)；
+实例模式（026）见 [docs/instance-mode.md](docs/instance-mode.md)；
 实现与验证说明见 [docs/develop.md](docs/develop.md)。
 
 ## 环境
@@ -24,9 +25,12 @@ L3 ROS 2 适配 / L4 业务内核 / L5 站编排 / L6 采集·质检·策略 / L
 WSL2 / Ubuntu 24.04 / ROS 2 Jazzy / 系统 python3.12（不建 venv，`setup_ros_env.sh` 会摘掉 venv）：
 
 ```bash
-source /home/ubuntu/discover/ros2_ws/setup_ros_env.sh
-cd /home/ubuntu/discover/station/rule_base_ros2
-pip install --user --break-system-packages --no-deps -e .   # 仅首次；让 python3 -m rule_base 免 PYTHONPATH
+source /home/ubuntu/yayyrobotics/ros2_ws/setup_ros_env.sh
+cd /home/ubuntu/yayyrobotics/rule_base
+# 本机 so101-rule-base 的 editable install 指向另一份旧副本，运行/测试时把本仓库 src 前置：
+export PYTHONPATH=$PWD/src:$PYTHONPATH
+# 可选（仅首次，让 python3 -m rule_base 免 PYTHONPATH；需系统 python 可写）：
+# pip install --user --break-system-packages --no-deps -e .
 ```
 
 依赖：numpy、pydantic 2、PyYAML（系统 python 已具备）。ROS 2 模式还需要 `arm_msgs` 已编译并 source 工作区。
@@ -74,6 +78,37 @@ CLI 参数：
 | `--target` | 已退役（原 Press fixture）；传入会明确失败 |
 
 退出码：`0` 全部完成；`1` 失败/清理未确认；`130` 中断。
+
+## 实例模式（026，inference_manager 拉起）
+
+除站侧 CLI 外，本仓库提供 026 实例入口 `python3 -m rule_base.instance.entry --config <yaml>
+[--dry-run]`，由 inference manager 拉起、由 factory manager 驱动轮次；业务内核零改动（入口每轮调用原
+CLI 跑一轮）。**契约**：时延/边沿/退出码以 [docs/plan/contracts.md](../docs/plan/contracts.md) §2 为准，
+实现说明见 [docs/instance-mode.md](docs/instance-mode.md)。
+
+```bash
+# 真机/生产（manager 按 submission.yaml 拉起；需要 ROS 环境与 arm 服务端）
+python3 -m rule_base.instance.entry --config configs/pick_place/live_ros2_vision_instance.yaml
+# mock/测试（禁止真机）：子进程 = rule_base.interfaces.node --dry-run --transport ros2
+python3 -m rule_base.instance.entry --config configs/pick_place/mock_ros2_instance.yaml --dry-run
+```
+
+要点（全部冻结，详见 docs/instance-mode.md）：
+
+- env：`INFERENCE_NAMESPACE`（可空）、`DOMAIN_ID`（必填；与 `ROS_DOMAIN_ID` 不一致 → 退出 2）、
+  `STATION_TYPE`（必须 `pick_place`）、`CLIENT_ID`/`LEASE_ID`（缺失 WARN，不失败）、可选 `INFERENCE_ID`；
+- 话题：`<ns>/inference/stopped`（2 Hz，RELIABLE+TRANSIENT_LOCAL+depth1）、`<ns>/env/reset_status`
+  （2 Hz 电平，**只认 False→True 边沿**）；机械臂话题走 `ros2.prefix`（默认 `/arm`），不走 namespace；
+- 每轮：先 `stopped=False` → 起子进程跑 `--rounds 1` → 子进程退出后 `stopped=True`；运行期 reset 丢弃，
+  持续 True 电平不重复开轮；
+- keepalive：空闲期 4 Hz（2–5 Hz）发 `<prefix>/joint_command`（位置=实测 joint_states，夹爪保持）
+  维持 arm 租约；**子进程运行期严格停发**；实例不 acquire/release 租约（配置 `arm.manage_lease: false`）；
+- 退出码：`0` SIGTERM 正常停止、`1` 运行/轮次失败、`2` 配置/env/warmup 失败；stdout 为单行 JSON 事件
+  （`instance_ready`/`round_started`/`instance_failed`（stage/error/inference_id）等）。
+
+`configs/pick_place/` 中实例配置：`mock_ros2_instance.yaml`（mock E2E）、
+`live_ros2_vision_instance.yaml`（真机视觉）、`live_ros2_teach.yaml`（真机 teach-point，
+TF 由 station_support 启动项提供）。上述实例配置均 `arm.manage_lease: false`。
 
 ## 配置
 
@@ -143,12 +178,18 @@ ros2:
 ## 测试
 
 ```bash
-source /home/ubuntu/discover/ros2_ws/setup_ros_env.sh
-cd /home/ubuntu/discover/station/rule_base_ros2
+export ROS_DOMAIN_ID=229                        # contracts §8：S1 登记域（禁止真机 domain 0）
+source /home/ubuntu/yayyrobotics/ros2_ws/setup_ros_env.sh
+cd /home/ubuntu/yayyrobotics/rule_base
+export PYTHONPATH=$PWD/src:$PYTHONPATH
 
-python3 -m pytest tests/unit tests/smoke -q          # 离线单元/冒烟（2026-11-12：378 passed）
-ROS_DOMAIN_ID=231 python3 -m pytest tests/integration/test_ros2_loopback.py -q -s
+python3 -m pytest tests/unit tests/smoke -q          # 离线单元/冒烟（含 instance 协议/keepalive/runner/entry 单测）
+python3 -m pytest tests/integration/test_ros2_loopback.py -q -s
                                                      # 隔离 domain 上跑 ROS2 适配器回环（mock 服务端；1 passed）
+
+# 实例模式 E2E（需 mock 接口覆盖层；与 station_support 的 229 集成测串行执行，避免 TF 父帧冲突）
+source /home/ubuntu/yayyrobotics/tools/mocks/ros2_ws/install/setup.bash
+python3 -m pytest tests/integration/test_instance_entry.py -q -s
 ```
 
 > 测试文件按 1000 行规则拆分：原 954 行的 `tests/unit/test_pick_place.py` 拆为

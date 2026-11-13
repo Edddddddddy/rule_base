@@ -1,0 +1,32 @@
+# SO-101 rule_base 026 算法交付声明（submission.yaml）
+#
+# 契约：docs/plan/contracts.md §1.2 / §8、docs/plan/03-rule_base-实例化改造开发计划.md §3。
+# inference_manager（本地模式）在固定 repo/commit 的仓库根目录读取本文件：
+#   - policy.model: rule-based（无模型、无 checkpoint/DVC；policy 段只允许 model）
+#   - targets.station_types: 本期仅 pick_place（launch.station_type 必须精确匹配）
+#   - resources: rule-based 可省略（按 0 GPU 处理）；显式填写时 gpu 必须为 0
+#   - runtime.kind: uv（要求仓库根存在 uv.lock）；本地 dev 可降级 system_python（WARN）
+#     * runtime.uv.python_version 缺省 3.12；本机系统 Python 3.12 + ROS 2 Jazzy
+#     * rclpy 来自系统 ROS 2（/opt/ros/jazzy），不在 PyPI：manager 启动实例时必须传递
+#       AMENT_PREFIX_PATH/PYTHONPATH（contracts.md §8），否则入口会以退出码 2 失败
+#
+# 实例入口（argv）默认 live 模式：子进程 CLI = `--run --rounds 1`（transport ros2）。
+# mock E2E/单测：`python3 -m rule_base.instance.entry --config configs/pick_place/mock_ros2_instance.yaml --dry-run`
+#   （--dry-run -> 子进程 CLI = `--dry-run --transport ros2`；仅测试用，禁止真机）。
+policy:
+  model: rule-based
+targets:
+  station_types: [pick_place]
+resources:
+  gpu_count: 0
+  gpu_memory_mib_per_gpu: 0
+runtime:
+  kind: uv
+  uv:
+    python_version: "3.12"
+    argv:
+      - python
+      - -m
+      - rule_base.instance.entry
+      - --config
+      - configs/pick_place/live_ros2_vision_instance.yaml

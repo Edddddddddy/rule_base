@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **2026-11-13 · 新增 026 实例入口（S1 实例化改造 RB-P1/P2，mock/本机证据）**：
+  - **背景**：inference manager 需要按 026 协议拉起算法程序；原仓库只有站侧 CLI。业务内核
+    （`application/stations/infrastructure/config`）**零改动**，入口每轮调用原 CLI 跑一轮。
+  - **新增 `src/rule_base/instance/`**：
+    - `protocol.py`（纯逻辑，无 ROS）：`INFERENCE_NAMESPACE/DOMAIN_ID/STATION_TYPE/CLIENT_ID/
+      LEASE_ID/INFERENCE_ID` 解析与校验（DOMAIN_ID 必填、与 ROS_DOMAIN_ID 不一致/STATION_TYPE 非
+      `pick_place`/非法 namespace → 配置错误）、namespace→话题、**False→True 边沿状态机**
+      （先见 False 武装、True 消费一次、运行期 reset 丢弃、轮后持续 True 不重复开轮）、退出码归类；
+    - `keepalive.py`（纯逻辑，无 ROS）：hold 命令=最近实测 6 关节位置（夹爪保持）、关节顺序按配置、
+      残缺/非有限样本跳过、2–5 Hz 频率校验（默认 4 Hz）、start/stop；
+    - `runner.py`：单轮子进程冻结 argv（live=`--rounds 1 --run`；mock=`--dry-run --transport ros2`）、
+      继承 env 并把**本仓库 `src` 前置 PYTHONPATH**（避免本机 editable install 的旧副本）、cwd=仓库根、
+      单轮超时 600 s（SIGTERM→5 s→SIGKILL）、退出码归类（0/非 0/中断/spawn 失败）；
+    - `entry.py`（rclpy 延迟 import）：env/config → 派生 ROS_DOMAIN_ID → rclpy.init → warmup（等
+      `<prefix>/joint_states` 首样本，默认 30 s，失败退出 2）→ `stopped=True` 2 Hz（RELIABLE+
+      TRANSIENT_LOCAL+depth1）→ 边沿开轮（先 False→子进程→True）→ SIGTERM 清理退出 0；
+      单轮失败输出 `stage`/`error`/`inference_id` 结构化 JSON → `stopped=True`（留 ≥1 周期）→ 退出 1；
+      stdout 全为单行 JSON 事件（`instance_starting/instance_ready/instance_topics/round_started/
+      round_finished/instance_failed/instance_stopping`）。
+  - **边界（冻结）**：实例不调用 `AcquireAuthority`/`ReleaseAuthority`（`manage_lease:false` 由实例
+    配置保证，rule_base 仅 `SwitchState(3)`）；不写 `/follower/forward_controller/commands`；子进程
+    运行期间严格停发 keepalive；不启真机（`--dry-run` 仅测试）。
+  - **测试**：新增 4 个离线单测文件 `tests/unit/test_instance_{protocol,keepalive,runner,entry}.py`
+    （**105 passed**，无 ROS 亦可跑；含边沿语义/env/退出码/argv/PYTHONPATH/SIGTERM 转发/超时强杀/
+    spawn 失败/CLI 失败路径）；新增集成测 `tests/integration/test_instance_entry.py` +
+    `instance_e2e_support.py` + 包装脚本 `instance_entry_mock.py`：用 `tools/mocks` 的
+    `fake_inference_manager.py --instance-script` 拉起**真实 entry**，在 ROS domain **229**（contracts §8）
+    上跑 mock arm（`tests/integration/ros2_mock_arm.py`）+ 测试扮演 FM 先 acquire 租约：验证 ready/stopped
+    时序、3 轮 reset 边沿、每轮结束后空闲 >5 s 再 `switch_state(3)→(0)` 均 success（keepalive 续租证据）、
+    空闲 hold ~4 Hz 且位置=实测 joint_states、轮后持续 True 2 s 不重开轮、stop 后 entry exit 0、manager
+    SIGTERM exit 0、无残留进程。domain 229 与 station_support SUP-P1 集成测共用（contracts §8），
+    集成测内含「域静谧预检」（foreign TF 父帧/多余 /arm 发布者/foreign 节点），检测到并发会话时等待并明确
+    提示串行执行（不是契约变更）。
+  - **配置/文档**：新增 `docs/instance-mode.md`（入口/环境变量/话题 QoS/状态机/keepalive/runner/退出码/
+    日志/安全边界/mock E2E 命令/已知限制）；本 README 增加「实例模式（026）」与测试命令。实例配置模板
+    （`configs/pick_place/{mock_ros2_instance,live_ros2_vision_instance,live_ros2_teach}.yaml`）、
+    `submission.yaml`、`uv.lock` 由 Lead 统一维护（S1 任务板 task-3），不在本条改动内。
+  - **证据分档**：全部为 mock/本机证据；未启真机、未使能运动、未 push。
 - **2026-11-12 · 抓取确认改为实测闭合宽度（S6l，用户现场确认，方案 A）**：
   - **问题（现场 15:24 run，target id2）**：夹爪实测 7.82 mm（确实夹住 1.5 cm 方块），但被固定
     方块宽度区间 `[0.010, 0.022]` m 判失败 → 走 recovery 抬升后回初始位松爪，把物体丢下。
