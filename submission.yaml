@@ -11,8 +11,9 @@
 #       AMENT_PREFIX_PATH/PYTHONPATH（contracts.md §8），否则入口会以退出码 2 失败
 #
 # 实例入口（argv）默认 live 模式：子进程 CLI = `--run --rounds 1`（transport ros2）。
-# mock E2E/单测：`python3 -m rule_base.instance.entry --config configs/pick_place/mock_ros2_instance.yaml --dry-run`
-#   （--dry-run -> 子进程 CLI = `--dry-run --transport ros2`；仅测试用，禁止真机）。
+# 【mock-policy 分支（内容 mock）】本分支只用于平台接入 E2E（EP/MP 评测任务 mock），
+# 指向上面的 mock 配置并带 --dry-run；子进程 CLI = `--dry-run --transport ros2`。
+# 仅测试用，禁止真机；真实任务请使用 feat/instance-mode 分支的提交。
 policy:
   model: rule-based
 targets:
@@ -29,4 +30,5 @@ runtime:
       - -m
       - rule_base.instance.entry
       - --config
-      - configs/pick_place/live_ros2_vision_instance.yaml
+      - configs/pick_place/mock_ros2_instance.yaml
+      - --dry-run
