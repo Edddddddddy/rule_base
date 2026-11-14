@@ -34,8 +34,8 @@ env_frames:
   # 得到正确抓取 TCP=[0.231937, 0.000606, -0.005299]，同时 env(20mm 码) 读到
   # [0.2327,-0.008,0.004] → 偏置 = 手拖 − env = [-0.0008, +0.0086, -0.0093]。
   # 换物体/换码尺寸/重新标定外参后必须重测（见 docs/ros2-adapter.md §9）。
-  grasp_offset_arm_m: [0.0014, 0.0090, -0.0114]
-  snapshot_timeout_s: 2.0                  # 观察位到位后取快照的截止时间（超时整轮失败）
+  grasp_offset_arm_m: [0.0039, 0.0177, -0.0147]
+  snapshot_timeout_s: 5.0                  # 观察位到位后取快照的截止时间（TF 发现/瞬断留余量）
   # 观察位（S6b/S6h 现场可达的关节位，复用 vision 观察位；env 相机固定外部，机械臂只需让开视野）
   observe_joint_positions: [-0.046, 0.0491, -0.3175, 1.6536, -1.4281]
   observe_joint_tolerance_rad: 0.02
