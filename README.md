@@ -54,13 +54,17 @@ python3 -m rule_base.interfaces.node --config configs/pick_place/live_ros2_visio
     --run --transport ros2
 
 # 5) 真机（仅 Lead+用户在场；先 mock 硬件同栈验证，见 docs/ros2-adapter.md §7）
-#    D-142：--run 只允许实时视觉 grasp_target；static 固定物体位姿入口已禁用。
+#    D-142：--run 允许实时视觉 grasp_target 或 env 位置订阅（env_frames）；static 固定物体位姿入口已禁用。
 python3 -m rule_base.interfaces.node --config configs/pick_place/live_ros2_vision.yaml \
     --run --transport ros2
+#    或 env 位置订阅（实例/FM 持租约；单机调试先复制到 /tmp 改 manage_lease:true）：
+# python3 -m rule_base.interfaces.node --config configs/pick_place/live_ros2_env.yaml \
+#     --run --transport ros2
 ```
 
-> `--run` 启动即校验抓取数据源（D-142）：配置没有 `frames.grasp_target`（仅静态 `frames.object`，
-> 如 `live_ros2.yaml`）会明确失败并提示改用 `live_ros2_vision.yaml`；`--dry-run`/mock 仍保留
+> `--run` 启动即校验抓取数据源（D-142）：配置没有 `frames.grasp_target` 且未启用
+> `env_frames`（仅静态 `frames.object`，如 `live_ros2.yaml`）会明确失败并提示改用
+> `live_ros2_vision.yaml` / `live_ros2_env.yaml`；`--dry-run`/mock 仍保留
 > legacy 静态路径用于测试与 mock 全链路。真机采集入口见 `station/integration/capture/run_capture_real.sh`
 > （非彩排 `--source scripted` 必须 `--scene-source vision --target-ids ...`）。
 
@@ -108,7 +112,22 @@ python3 -m rule_base.instance.entry --config configs/pick_place/mock_ros2_instan
 
 `configs/pick_place/` 中实例配置：`mock_ros2_instance.yaml`（mock E2E）、
 `live_ros2_vision_instance.yaml`（真机视觉）、`live_ros2_teach.yaml`（真机 teach-point，
-TF 由 station_support 启动项提供）。上述实例配置均 `arm.manage_lease: false`。
+TF 由 station_support 启动项提供）、`live_ros2_env.yaml`（真机 env 位置订阅：env_app 的
+`env_marker_<id>` + `/tf_static` `place_target_01`，见下）。上述实例配置均 `arm.manage_lease: false`。
+
+### env 位置订阅模式（2026-11-14，第三种坐标来源，默认关闭）
+
+`configs/pick_place/live_ros2_env.yaml` + `env_frames:` 段：抓取物体 id/坐标来自 env_app 发布的
+动态 TF `base_link -> env_marker_<target_object_id>`，放置坐标来自其 `/tf_static` 的
+`base_link -> place_target_01`；**观察位到位后读一次 TF 快照，整轮复用**（不逐帧跟随、不用腕部
+相机/refresh 服务/station_support）。抓取 TCP = marker 位置 + `profile.grasp_contact_offset_tcp_m`
+（顶抓参考姿态）+ `env_frames.grasp_offset_arm_m`（现场标定偏置，见 docs/ros2-adapter.md §9.2）；
+其余几何沿用 `profiles/real_pick.yaml`。
+
+- 目标 id：配置字段 `env_frames.target_object_id`，可用环境变量 `RULE_BASE_TARGET_OBJECT_ID`
+  覆盖（FM/IM launch srv 透传属后续契约变更）；
+- 单独 CLI 调试时把配置复制到 `/tmp` 并把 `arm.manage_lease` 改 `true`（原配置为实例/FM 持租约）；
+- 失败语义/D-142 口径/事件见 [docs/ros2-adapter.md](docs/ros2-adapter.md) §9。
 
 ## 配置
 

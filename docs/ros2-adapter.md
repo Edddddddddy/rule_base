@@ -154,6 +154,8 @@ ROS_DOMAIN_ID=231 python3 -m rule_base.interfaces.node \
 > `frames.grasp_target`（`configs/pick_place/live_ros2_vision.yaml`）。`live_ros2.yaml` 的
 > static 物体位姿（`frames.object` 由 `tools/object_pose_publisher.py` 固定坐标发布）仅保留给
 > `--dry-run` / mock / 测试；`--run` 启动即校验 `frames.grasp_target`，缺失则明确失败（不靠配置自觉）。
+> **2026-11-14 增量**：env 位置订阅模式（§9，`env_frames.enabled`）消费 env_app 的 live TF 快照，
+> 同属允许的 live 位置来源（`validate_live_grasp_source()` 放行）；仅静态 `frames.object` 仍被拒绝。
 
 真机配置：`configs/pick_place/live_ros2_vision.yaml` + `configs/pick_place/profiles/real_pick.yaml`
 （保守 limits；`ros2.tcp_frame = grasp_tcp_link`，即 p7 兼容顶抓帧：+X = 手指方向/接近轴、
@@ -483,3 +485,83 @@ place:                                  # 可选：放置点第二动态 TF（ru
 
 > 真机 domain 0 上的服务调用属于真机操作：必须用户在场 + Lead 授权；mock/测试一律用隔离
 > domain（如 231）。
+
+## 9. env 位置订阅模式（2026-11-14，additive，默认关闭）
+
+用户现场架构的第三种坐标来源：不使用 station_support 静态示教、不使用腕部 ArUco 检测，
+直接消费 env_app（环境板）发布的位姿 TF；**观察位到位后读一次快照，整轮复用**。
+
+### 9.1 配置（`env_frames:` 段，默认关闭）
+
+```yaml
+frames:                       # env 模式不写 object/place/grasp_target（启动即校验拒绝混用）
+  root: world
+  arm_base: base_link
+env_frames:
+  enabled: true
+  object_tf_prefix: env_marker_   # 物体帧 = <prefix><target_object_id>
+  target_object_id: "1"           # 上游指定；环境变量 RULE_BASE_TARGET_OBJECT_ID 覆盖
+  place_frame: place_target_01    # env_app 的 /tf_static 放置帧
+  grasp_offset_arm_m: [0.0, 0.0, 0.0]  # 现场标定：arm 系固定抓取偏置（marker → 指尖接触点）
+  snapshot_timeout_s: 2.0         # 观察位到位后取快照的截止时间（超时整轮失败）
+  observe_joint_positions: [...]  # 观察位（5 臂关节，rad）；缺省退化为 TCP 观察位
+  observe_joint_tolerance_rad: 0.02
+  observe_settle_s: 1.0
+  observe_position_arm_m: [0.28, 0.0, 0.20]
+  observe_orientation_arm_xyzw: [0.7071, 0.0, -0.7071, 0.0]
+```
+
+- 模板配置：`configs/pick_place/live_ros2_env.yaml`（`profile_file: profiles/real_pick.yaml`、
+  `vision.enabled:false`、`arm.manage_lease:false`＝实例/FM 持租约）。
+- `target_object_id` 可由 `RULE_BASE_TARGET_OBJECT_ID` 覆盖（空值/非法帧 token → 加载即失败）；
+  026 launch srv 透传属后续契约变更。
+- 互斥校验：`env_frames.enabled` 与 `vision.enabled`/`frames.object`/`frames.grasp_target`/
+  `frames.place` 不能同时配置（避免坐标来源歧义）。
+
+### 9.2 TF 与几何契约
+
+| 数据 | 帧/来源 | 说明 |
+|---|---|---|
+| 物体 | `/tf` 动态 `env_marker_<id>`（parent `base_link`，env_app 约 20 Hz） | 只取**位置**；物体旋转不参与抓取姿态 |
+| 放置点 | `/tf_static` `place_target_01`（parent `base_link`） | 与既有 `frames.place` 同一语义（放置 TCP 目标位姿） |
+| 抓取 TCP | `marker.position + profile.grasp_contact_offset_tcp_m + env_frames.grasp_offset_arm_m`（前两项在 TCP 系按顶抓参考旋转换算；最后一项是 arm 系固定平移） | 姿态恒为 `profile.reference_tcp_orientation_root_xyzw`（D-047 顶抓常量） |
+| pregrasp / observation / post_grasp / place approach/retreat | 沿用 `profiles/real_pick.yaml` 既有逻辑 | 宽度判定仍以实测闭合宽度为准；固定方块区间仅诊断 |
+
+> **`grasp_offset_arm_m` 现场标定（2026-11-14 真机）**：env 只输出「码面」位姿，而顶抓需要
+> **指尖接触点在码面下方**（指长/夹持深度）+ 吸收码贴装与外参残差，因此 env 模式必须提供
+> 一次性现场偏置。标定方法：重力补偿手拖到正确抓取 TCP（`/arm/tcp_pose` 读数）− 同一时刻
+> `env_marker_<id>` 位姿（base_link）＝偏置；必须**每个物体/每个码面尺寸**在真机上重测
+> （`|每轴| <= 0.1 m` 由配置校验 fail-closed）。
+>
+> 2026-11-14 现场两轮实测（id1，码面 2 cm）：
+> ① 方块位于 x≈0.23 时：手拖 TCP `[0.2319, 0.0006, -0.0053]`，env `[0.2327, -0.008, 0.004]`
+>    → 偏置 `[-0.0008, 0.0086, -0.0093]`；
+> ② 方块移到 x≈0.28（配置验证可达区）后：手拖 TCP `[0.2571, -0.0030, -0.0071]`，
+>    env `[0.2557, -0.0120, 0.0043]` → 偏置 `[0.0014, 0.0090, -0.0114]`（当前 `live_ros2_env.yaml` 值）。
+> 两轮偏置的 y/z 分量稳定（+9 mm / −11 mm 量级），但 env 单码位姿在真实场景中存在
+> ±5–10 mm 级抖动与几何精度限制（当前外参 `quality_status=review_required`：平移残差
+> 14.3 mm / 旋转 2.81°），这也是 env 模式真机抓取仍需改进标定的原因。
+
+> env 模式**不叠加** `profile.grasp_target_offset_arm_m`（该字段是 vision/teach 目标路径的
+> 横向补偿；env 模式示教/检测偏差由 env_app 标定负责）。marker 旋转不参与抓取姿态
+> （贴码朝向只影响 env_app 的位姿输出），如需按物体 yaw 调整闭合轴则换 `tcp_xyz/quat` 单物体补偿。
+
+### 9.3 轮次流程与事件（additive）
+
+```text
+connect → acquire_control → home_start → initialize_servo
+  → env_observe_joints（或 env_observe：TCP 观察位，配置 observe_joint_positions 时用关节空间）
+  → settle（observe_settle_s）→ env_snapshot（有界重试直到 snapshot_timeout_s）
+  → pick_plan（整轮唯一快照）→ open_gripper → pregrasp → grasp_pose → close_gripper
+  → place 链 → home_end
+```
+
+- 事件：`env_observe_joints_complete`、`env_snapshot`（`target_object_id/object_frame/place_frame/
+  object_pose_arm/place_pose_arm/elapsed_s`）、`env_snapshot_wait`（等待重试诊断，≤1 Hz）、
+  `pick_plan`（与 legacy/vision 同字段）。
+- 失败语义：TF 缺失/超时 → `env snapshot timed out ...` 整轮失败（stage `env_snapshot`），
+  不进入抓取恢复、不夹爪、不伪报成功；`env_*` 阶段失败与 `vision_*` 同档（输入/工作空间失败）。
+- 暖机：env 模式 warmup 只等机器链 `root→arm_base`（折叠 rest 时 env 相机可能看不到物体），
+  首次快照在观察位读取；`max_grasp_attempts>1` 的重试路径会重新取一次有界快照（真机配置固定 1 次）。
+- D-142：env 模式属于 live 位置来源，`--run` 允许（与 vision `frames.grasp_target` 并列）；
+  仅静态 `frames.object` 的配置仍被拒绝。

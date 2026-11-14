@@ -1,0 +1,104 @@
+# SO-101 真机 env 位置订阅配置（第三种坐标来源；不改 teach/vision 已验收配置）。
+#
+# 数据来源（用户现场架构要求，2026-11-14）：
+#   * 抓取物体 id+坐标：env_app 发布的动态 TF `/tf` `base_link -> env_marker_<id>`
+#     （20 Hz）。id 由上游指定：配置字段 env_frames.target_object_id，可用环境变量
+#     RULE_BASE_TARGET_OBJECT_ID 覆盖（FM/IM launch srv 透传属后续契约变更）。
+#   * 放置坐标：env_app 发布的静态 TF `/tf_static` `base_link -> place_target_01`。
+#   * 观察位到位后读**一次** TF 快照，整轮复用（不逐帧跟随、不用腕部视觉、不调
+#     /vision/refresh_object_pose、不依赖 station_support）。
+#
+# 抓取几何：grasp TCP = env marker 位置 + profile.grasp_contact_offset_tcp_m
+# （顶抓姿态/TCP 系下合成；real_pick 该 offset 为 0 → 抓取点即 marker 位置），
+# 姿态恒为 profile.reference_tcp_orientation_root_xyzw（D-047 顶抓常量）。
+# pregrasp/observation/post_grasp/place approach/retreat 全部沿用 profiles/real_pick.yaml。
+#
+# 真机前提：arm 栈 + env_app（env_vision 发布 env_marker_*；env_service 供实例/FM reset），
+# enable_motion 由用户显式确认；arm.manage_lease:false = 租约由 FM 持有（单独 CLI 调试
+# 请复制到 /tmp 改成 manage_lease:true 再跑，参见 README「env 位置订阅模式」）。
+
+task: pick
+fixture_only: true
+frames:
+  # env 模式不配置 frames.object / frames.grasp_target / frames.place：object 帧由
+  # env_frames.object_tf_prefix + target_object_id 生成，place 帧来自 env_frames.place_frame。
+  root: world
+  arm_base: base_link
+env_frames:
+  enabled: true
+  object_tf_prefix: env_marker_
+  target_object_id: "1"                    # 可用 RULE_BASE_TARGET_OBJECT_ID 覆盖
+  place_frame: place_target_01             # env_app 的 /tf_static 放置帧
+  # 现场标定抓取偏置（arm_frame 平移，不动姿态）：env 只发码面位姿，顶抓需要指尖接触点
+  # 在码面下方（夹爪指长/深度）+ 吸收码贴装/外参残差。2026-11-14 现场用重力补偿手拖
+  # 得到正确抓取 TCP=[0.231937, 0.000606, -0.005299]，同时 env(20mm 码) 读到
+  # [0.2327,-0.008,0.004] → 偏置 = 手拖 − env = [-0.0008, +0.0086, -0.0093]。
+  # 换物体/换码尺寸/重新标定外参后必须重测（见 docs/ros2-adapter.md §9）。
+  grasp_offset_arm_m: [0.0014, 0.0090, -0.0114]
+  snapshot_timeout_s: 2.0                  # 观察位到位后取快照的截止时间（超时整轮失败）
+  # 观察位（S6b/S6h 现场可达的关节位，复用 vision 观察位；env 相机固定外部，机械臂只需让开视野）
+  observe_joint_positions: [-0.046, 0.0491, -0.3175, 1.6536, -1.4281]
+  observe_joint_tolerance_rad: 0.02
+  observe_settle_s: 1.0
+  # 未配置 observe_joint_positions 时退化为 TCP 观察位（需现场确认可达/在工作空间内）：
+  observe_position_arm_m: [0.24613, 0.015309, 0.109946]
+  observe_orientation_arm_xyzw: [0.740458356, 0.045132322, -0.668923796, 0.047174696]
+
+vision:
+  # env 模式关闭视觉伺服（无腕部相机/无 refresh 服务）；目标位姿来自 env TF 快照。
+  enabled: false
+profile_file: profiles/real_pick.yaml
+limits:
+  # 保守时序：20 Hz 目标刷新、1 cm 步进、5 cm/s 目标推进；到位判定放宽容差（真机弱扭矩/跟随滞后）。
+  servo_hz: 20
+  # S6b 真机时序容差（用户批准）：0.3 → 0.45 s。WSL/5V 串口链路偶发送抖动，
+  # 单次 servo 目标间隔可能 ~0.31s（`Servo refresh deadline missed`）；放宽到 450ms
+  # 仍 < arm_app command_timeout 500ms，超过 450ms 仍明确失败；不改安全限速
+  # （max_joint_velocity/step 等不变）。
+  servo_max_gap_s: 0.45
+  stable_time_s: 0.2
+  motion_stable_time_s: 0.2
+  motion_joint_velocity_rad_s: 0.02
+  linear_speed_m_s: 0.05
+  linear_step_m: 0.01
+  position_tolerance_m: 0.01
+  orientation_tolerance_rad: 0.1
+  stage_timeout_s: 10
+  warmup_timeout_s: 15
+  # TF 由 robot_state_publisher 计算（joint_states 50 Hz），给足时效余量。
+  tf_age_s: 1.0
+  tf_skew_s: 0.2
+  tf_future_tolerance_s: 0.05
+  # 真机不做自动重试放大动作：一次抓取失败即停下，由人确认后重跑。
+  max_grasp_attempts: 1
+  grasp_confirmation_timeout_s: 2.0
+  recovery_feedback_timeout_s: 5.0
+  recovery_feedback_stable_time_s: 0.3
+  max_cube_tilt_rad: 0.2617993877991494
+  gripper_hold_hz: 5
+  gripper_effort: 8
+  # 每轮开始/结束归零（折叠 rest）：5 个臂关节误差 ≤ home_tolerance_rad 且持续
+  # motion_stable_time_s 视为到位；home_timeout_s 超时明确失败（真机 20 Hz 关节流 +
+  # 服务端 max_joint_step_rad 钳位，从工作位收敛到 rest 需要时间，留足余量）。
+  home_tolerance_rad: 0.08
+  home_timeout_s: 30
+arm:
+  acquire_control: true
+  manage_lease: false
+  # PlanRequest 内含 MoveIt /compute_ik（kinematics timeout 0.2 s × attempts），留足余量。
+  rpc_timeout_ms: 5000
+  cleanup_rpc_timeout_ms: 2000
+  feedback_timeout_s: 0.5
+  state_timeout_s: 2.0
+ros2:
+  prefix: /arm
+  base_frame: base_link
+  # p7 兼容顶抓帧（SO-101 的真实手指方向绕了一层固定旋转，见 so101_ee_common.xacro）
+  tcp_frame: grasp_tcp_link
+  # 每轮开始/结束归零的折叠 rest（D-094，rad）。第 6 位是夹爪：回零时用实测关节角
+  # 保持，不按这里的值动爪，所以该位仅作占位/文档。
+  # S6a：腕部 180° 只用于**动作/观测姿态**（见 profiles/real_pick.yaml 与
+  # live_ros2_vision.yaml 的 observe_orientation）；折叠 rest 保持 wrist_roll=0。
+  # 真机 wrist_roll 硬件限位 [-2.74385, 2.84121]（约 ±162.8°），π 不可达 → 不能写 π，
+  # 否则 home_start 会停在 2.842 限位并超时报错（真机首采已实测）。
+  home_joint_positions: [0.0, -1.52, 1.45, 0.75, 0.0, 0.0]

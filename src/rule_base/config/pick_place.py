@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -13,12 +14,29 @@ from rule_base.domain.models import Quaternion, Vector3
 from .models import ArmSettings, Limits, Model, Ros2Settings
 
 
+def _valid_tf_frame(name: str) -> bool:
+    """A plain TF frame id (no leading '/', no empty segments, no whitespace)."""
+    return (
+        bool(name)
+        and not name.startswith("/")
+        and not name.endswith("/")
+        and "//" not in name
+        and not any(char.isspace() for char in name)
+    )
+
+
 class PickFrames(Model):
     root: str
     arm_base: str = Field(
         description="TF name of the arm command base; PlanRequest targets use this frame"
     )
-    object: str
+    object: str | None = Field(
+        default=None,
+        description=(
+            "TF name of the object/scene frame; required unless env_frames.enabled, where the "
+            "object frame is derived from object_tf_prefix + target_object_id"
+        ),
+    )
     place: str | None = Field(
         default=None,
         description="TF name of the place target; configuring it enables the place stage",
@@ -33,12 +51,12 @@ class PickFrames(Model):
 
     @model_validator(mode="after")
     def validate_names(self) -> Self:
-        names = (self.root, self.arm_base, self.object)
+        names = (self.root, self.arm_base)
         optional = tuple(
-            name for name in (self.place, self.grasp_target) if name is not None
+            name for name in (self.object, self.place, self.grasp_target) if name is not None
         )
         if len(set(names + optional)) != len(names + optional) or any(
-            not name or any(c.isspace() for c in name) for name in names + optional
+            not _valid_tf_frame(name) for name in names + optional
         ):
             raise ValueError("distinct nonblank Pick TF frames are required")
         return self
@@ -57,7 +75,7 @@ class PickProfile(Model):
     grasp_target_offset_arm_m: Vector3 = Field(
         default=(0.0, 0.0, 0.0),
         description="Fixed arm-frame translation added to the vision grasp_target position "
-                    "(orientation unchanged; |each value| <= 0.05 m)",
+        "(orientation unchanged; |each value| <= 0.05 m)",
     )
     reference_tcp_orientation_root_xyzw: Quaternion = Field(
         description="Reference world TCP orientation before horizontal cube alignment"
@@ -76,7 +94,7 @@ class PickProfile(Model):
         gt=0,
         le=0.02,
         description="Contact-evidence margin over gripper_closed_m and under gripper_open_m "
-                    "for the live measured grip width (the fixed cube interval is diagnostic only)",
+        "for the live measured grip width (the fixed cube interval is diagnostic only)",
     )
     # 确认抓取后进入 holding：实测宽度与「确认时刻记录的实测接触宽度」偏差超过该值即抓取丢失
     # （保持既有 lost-grasp 失败语义，不放宽容差）。
@@ -85,7 +103,7 @@ class PickProfile(Model):
         gt=0,
         le=0.02,
         description="Holding tolerance around the measured contact width recorded at grasp "
-                    "confirmation; a larger deviation keeps the lost-grasp failure semantics",
+        "confirmation; a larger deviation keeps the lost-grasp failure semantics",
     )
     post_grasp_position_arm_m: Vector3
     post_grasp_orientation_arm_xyzw: Quaternion
@@ -133,16 +151,15 @@ class PickProfile(Model):
             "post_grasp_orientation_arm_xyzw": self.post_grasp_orientation_arm_xyzw,
         }
         for name, quaternion in quaternions.items():
-            if not math.isclose(
-                math.sqrt(sum(v * v for v in quaternion)), 1, abs_tol=1e-3
-            ):
+            if not math.isclose(math.sqrt(sum(v * v for v in quaternion)), 1, abs_tol=1e-3):
                 raise ValueError(f"{name} must be a unit xyzw quaternion")
         if any(a >= b for a, b in zip(self.workspace_min_m, self.workspace_max_m, strict=True)):
             raise ValueError("workspace bounds must be ordered")
         offset = self.observation_offset_root_m
-        if not all(math.isfinite(value) for value in offset) or math.dist(
-            offset, (0.0, 0.0, 0.0)
-        ) > 0.2:
+        if (
+            not all(math.isfinite(value) for value in offset)
+            or math.dist(offset, (0.0, 0.0, 0.0)) > 0.2
+        ):
             raise ValueError("observation_offset_root_m must be finite and at most 0.2 m long")
         grasp_offset = self.grasp_target_offset_arm_m
         if not all(math.isfinite(value) for value in grasp_offset) or any(
@@ -204,11 +221,11 @@ class PickLimits(Limits):
 
 #: SO-101 五臂关节硬件限位（rad；来自 URDF；gripper 不在其中）。用于观察关节位安全校验。
 ARM_JOINT_LIMITS_RAD: tuple[tuple[float, float], ...] = (
-    (-1.91986, 1.91986),   # shoulder_pan
-    (-1.6964, 1.74533),    # shoulder_lift
-    (-1.69, 1.5323),       # elbow_flex
-    (-1.74533, 1.74533),   # wrist_flex（真机实测可到 1.738；按硬件范围放宽到 ±1.74533）
-    (-2.74385, 2.84121),   # wrist_roll（真机实测限位；π 不可达）
+    (-1.91986, 1.91986),  # shoulder_pan
+    (-1.6964, 1.74533),  # shoulder_lift
+    (-1.69, 1.5323),  # elbow_flex
+    (-1.74533, 1.74533),  # wrist_flex（真机实测可到 1.738；按硬件范围放宽到 ±1.74533）
+    (-2.74385, 2.84121),  # wrist_roll（真机实测限位；π 不可达）
 )
 
 
@@ -251,7 +268,7 @@ class VisionSettings(Model):
     observe_first: bool = Field(
         default=False,
         description="Move to a fixed observation pose and detect/plan there "
-                    "(vision target is not required before the first move)",
+        "(vision target is not required before the first move)",
     )
     observe_position_arm_m: Vector3 = Field(
         default=(0.28, 0.0, 0.20),
@@ -263,74 +280,96 @@ class VisionSettings(Model):
     observe_joint_positions: tuple[float, ...] | None = Field(
         default=None,
         description="Optional 5 arm-joint observation target (rad). When set, "
-                    "observe_first moves there in joint space instead of planning "
-                    "the configured observe TCP pose; gripper stays measured.",
+        "observe_first moves there in joint space instead of planning "
+        "the configured observe TCP pose; gripper stays measured.",
     )
     observe_orientation_arm_xyzw: Quaternion = Field(
         default=(0.7071067811865476, 0.0, -0.7071067811865476, 0.0),
         description="Fixed observation TCP orientation in frames.arm_base (xyzw; "
-                    "top-grasp reference, camera looking down at the workspace)",
+        "top-grasp reference, camera looking down at the workspace)",
     )
     # D-132: sample the vision TF at the observation pose, reject unstable frames,
     # lock one robust target for the whole round and stop applying pregrasp
     # corrections from later (often occluded / ambiguous) detections.
     observe_samples: int = Field(
-        default=3, ge=1, le=5, strict=True,
+        default=3,
+        ge=1,
+        le=5,
+        strict=True,
         description="Number of vision refreshes sampled at the observation pose",
     )
     # S6i（run 20261112-123821 现场）：观察位刚到位时视觉节点仍有旧 coast 目标/平滑
     # 窗口未收敛，首帧 object TF 与后续帧差 64 mm，被稳定性门误杀。因此 settle 后先
     # 丢弃 observe_warmup_samples 帧预热（不计入 median/spread 统计），再采正式样本。
     observe_warmup_samples: int = Field(
-        default=2, ge=0, le=5, strict=True,
+        default=2,
+        ge=0,
+        le=5,
+        strict=True,
         description="Observation refreshes discarded after settle before sampling "
-                    "(stale/coasting vision target; never enters the stability gate)",
+        "(stale/coasting vision target; never enters the stability gate)",
     )
     # S6g（现场）：观察位必须**停稳 + 多次间隔采样确认 TF 稳定**后再锁定抓取。
     # wrist_flex 曾残留 0.084 rad（≈4.8°）使相机倾斜，物体 TF 出现 ~2 cm 系统偏差；
     # 观察关节到位容差因此收紧到 0.02 rad（home 仍用 limits.home_tolerance_rad）。
     observe_joint_tolerance_rad: float = Field(
-        default=0.02, gt=0, le=0.08,
+        default=0.02,
+        gt=0,
+        le=0.08,
         description="Arrival tolerance of the joint-space observation move (rad); "
-                    "stricter than limits.home_tolerance_rad",
+        "stricter than limits.home_tolerance_rad",
     )
     observe_settle_s: float = Field(
-        default=0.8, ge=0, le=5,
+        default=0.8,
+        ge=0,
+        le=5,
         description="Servo-kept settle time at the observation pose before the first sample",
     )
     observe_sample_interval_s: float = Field(
-        default=0.2, ge=0, le=1,
+        default=0.2,
+        ge=0,
+        le=1,
         description="Wait between observation refreshes so the arm and TF are stable",
     )
     observe_stability_m: float = Field(
-        default=0.008, gt=0, le=0.05,
+        default=0.008,
+        gt=0,
+        le=0.05,
         description="Max accepted translation spread of the observation samples (m)",
     )
     observe_stability_rad: float = Field(
-        default=0.02, gt=0, lt=math.pi,
+        default=0.02,
+        gt=0,
+        lt=math.pi,
         description="Max accepted rotation spread of the observation samples (rad)",
     )
     observe_max_reprojection_px: float = Field(
-        default=1.5, gt=0, le=10,
+        default=1.5,
+        gt=0,
+        le=10,
         description="Reject observation samples whose refresh re-projection exceeds this",
     )
     lock_target_after_observation: bool = Field(
         default=False,
         description="Do not refresh/apply corrections after the observation target is "
-                    "locked (the grasp approach uses the locked plan)",
+        "locked (the grasp approach uses the locked plan)",
     )
     grasp_verify_enabled: bool = Field(
         default=False,
         description="One-shot detection at the pregrasp pose before descending to the grasp "
-                    "pose and closing the jaws (safety/diagnostic check; does not correct "
-                    "the locked plan)",
+        "pose and closing the jaws (safety/diagnostic check; does not correct "
+        "the locked plan)",
     )
     grasp_verify_tolerance_m: float = Field(
-        default=0.020, gt=0, le=0.10,
+        default=0.020,
+        gt=0,
+        le=0.10,
         description="Max detected-vs-locked grasp position error at the pregrasp pose",
     )
     grasp_verify_tolerance_rad: float = Field(
-        default=0.15, gt=0, lt=math.pi,
+        default=0.15,
+        gt=0,
+        lt=math.pi,
         description="Max detected-vs-locked grasp orientation error at the pregrasp pose",
     )
 
@@ -343,19 +382,23 @@ class VisionSettings(Model):
             if not (self.enabled and self.observe_first):
                 raise ValueError(
                     "vision.observe_joint_positions requires vision.enabled=true and "
-                    "vision.observe_first=true")
+                    "vision.observe_first=true"
+                )
             if len(joints) != len(ARM_JOINT_LIMITS_RAD):
                 raise ValueError(
                     f"vision.observe_joint_positions must hold {len(ARM_JOINT_LIMITS_RAD)} "
-                    f"arm-joint values, got {len(joints)}")
+                    f"arm-joint values, got {len(joints)}"
+                )
             if not all(math.isfinite(float(value)) for value in joints):
                 raise ValueError("vision.observe_joint_positions must be finite")
             for index, (value, (lower, upper)) in enumerate(
-                    zip(joints, ARM_JOINT_LIMITS_RAD, strict=True)):
+                zip(joints, ARM_JOINT_LIMITS_RAD, strict=True)
+            ):
                 if not lower <= float(value) <= upper:
                     raise ValueError(
                         f"vision.observe_joint_positions[{index}]={value!r} outside "
-                        f"hardware limit [{lower}, {upper}] rad")
+                        f"hardware limit [{lower}, {upper}] rad"
+                    )
         if not all(math.isfinite(value) for value in self.observe_position_arm_m):
             raise ValueError("vision.observe_position_arm_m must be finite")
         norm = math.sqrt(sum(value * value for value in self.observe_orientation_arm_xyzw))
@@ -381,10 +424,156 @@ class VisionSettings(Model):
         return self
 
 
+class EnvFramesSettings(Model):
+    """Env position-subscription mode (third coordinate source, additive & default off).
+
+    Instead of station_support static teach points (teach mode) or the wrist-ArUco
+    vision node (vision mode), this mode consumes the environment node (env_app):
+    the object id/pose comes from the dynamic ``/tf`` frame
+    ``<object_tf_prefix><target_object_id>`` (parent ``frames.arm_base``, e.g. 20 Hz)
+    and the place target from the ``/tf_static`` frame ``place_frame``.  The pose is
+    read **once** after the arm reaches the fixed observation pose and the same
+    snapshot is used for the whole round (no per-frame following, no camera/servo
+    refresh dependency).  ``target_object_id`` may be overridden by the
+    ``RULE_BASE_TARGET_OBJECT_ID`` environment variable (upstream selection; the
+    026 launch-service pass-through is a later contract change).
+    """
+
+    enabled: bool = False
+    object_tf_prefix: str = Field(
+        default="env_marker_",
+        description="TF child-frame prefix of the env object frame (env_app default)",
+    )
+    target_object_id: str = Field(
+        default="",
+        description="env_app marker/object id appended to object_tf_prefix; "
+        "overridable by RULE_BASE_TARGET_OBJECT_ID",
+    )
+    place_frame: str = Field(
+        default="place_target_01",
+        description="tf_static place-target frame published by env_app (parent arm_base)",
+    )
+    grasp_offset_arm_m: Vector3 = Field(
+        default=(0.0, 0.0, 0.0),
+        description="Field-calibrated fixed arm-frame translation added to the env "
+        "marker position before the top grasp (marker placement / contact-depth / "
+        "extrinsics bias; orientation unchanged; |each value| <= 0.1 m).  This is "
+        "the env-mode analogue of profile.grasp_target_offset_arm_m.",
+    )
+    snapshot_timeout_s: float = Field(
+        default=2.0,
+        gt=0,
+        le=10.0,
+        description="Deadline to obtain the env object+place TF snapshot at the "
+        "observation pose before the round fails explicitly",
+    )
+    observe_joint_positions: tuple[float, ...] | None = Field(
+        default=None,
+        description="Optional 5 arm-joint observation target (rad); when set the env "
+        "mode moves there in joint space and snapshots after arrival",
+    )
+    observe_joint_tolerance_rad: float = Field(
+        default=0.02,
+        gt=0,
+        le=0.08,
+        description="Arrival tolerance of the joint-space observation move (rad)",
+    )
+    observe_settle_s: float = Field(
+        default=1.0,
+        ge=0,
+        le=5,
+        description="Servo-kept settle time at the observation pose before the snapshot",
+    )
+    observe_position_arm_m: Vector3 = Field(
+        default=(0.28, 0.0, 0.20),
+        description="Fixed observation TCP position in frames.arm_base (m) when no "
+        "observe_joint_positions is configured",
+    )
+    observe_orientation_arm_xyzw: Quaternion = Field(
+        default=(0.7071067811865476, 0.0, -0.7071067811865476, 0.0),
+        description="Fixed observation TCP orientation in frames.arm_base (xyzw)",
+    )
+
+    @property
+    def object_frame(self) -> str:
+        """The env object frame derived from prefix + target id."""
+        return f"{self.object_tf_prefix}{self.target_object_id}"
+
+    @model_validator(mode="after")
+    def validate_env_frames(self) -> Self:
+        prefix = self.object_tf_prefix
+        if not _valid_tf_frame(f"{prefix}x") or not prefix:
+            raise ValueError(
+                "env_frames.object_tf_prefix must be a non-empty TF frame prefix "
+                "(no whitespace, no '/', e.g. 'env_marker_')"
+            )
+        target_id = self.target_object_id
+        if target_id != target_id.strip():
+            raise ValueError("env_frames.target_object_id must not contain surrounding whitespace")
+        if self.enabled and not target_id:
+            raise ValueError(
+                "env_frames.target_object_id is required when env_frames.enabled (or set "
+                "RULE_BASE_TARGET_OBJECT_ID)"
+            )
+        if target_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_]*", target_id):
+            raise ValueError(
+                "env_frames.target_object_id must be a frame-safe token such as '1' "
+                "(letters/digits/underscore, no leading '/', no whitespace)"
+            )
+        if self.enabled and not _valid_tf_frame(self.object_frame):
+            raise ValueError(
+                f"env_frames derived object frame {self.object_frame!r} is not a valid TF frame"
+            )
+        if not _valid_tf_frame(self.place_frame):
+            raise ValueError(
+                "env_frames.place_frame must be a valid TF frame id such as 'place_target_01'"
+            )
+        if self.enabled and self.object_frame == self.place_frame:
+            raise ValueError(
+                "env_frames derived object frame must differ from env_frames.place_frame"
+            )
+        joints = self.observe_joint_positions
+        if joints is not None:
+            if not self.enabled:
+                raise ValueError("env_frames.observe_joint_positions requires enabled=true")
+            if len(joints) != len(ARM_JOINT_LIMITS_RAD):
+                raise ValueError(
+                    f"env_frames.observe_joint_positions must hold "
+                    f"{len(ARM_JOINT_LIMITS_RAD)} arm-joint values, got {len(joints)}"
+                )
+            if not all(math.isfinite(float(value)) for value in joints):
+                raise ValueError("env_frames.observe_joint_positions must be finite")
+            for index, (value, (lower, upper)) in enumerate(
+                zip(joints, ARM_JOINT_LIMITS_RAD, strict=True)
+            ):
+                if not lower <= float(value) <= upper:
+                    raise ValueError(
+                        f"env_frames.observe_joint_positions[{index}]={value!r} outside "
+                        f"hardware limit [{lower}, {upper}] rad"
+                    )
+        if not all(math.isfinite(value) for value in self.observe_position_arm_m):
+            raise ValueError("env_frames.observe_position_arm_m must be finite")
+        norm = math.sqrt(sum(value * value for value in self.observe_orientation_arm_xyzw))
+        if not math.isclose(norm, 1.0, abs_tol=1e-3):
+            raise ValueError(
+                "env_frames.observe_orientation_arm_xyzw must be a unit xyzw quaternion, "
+                f"|q|={norm:.6f}"
+            )
+        if not all(math.isfinite(float(value)) for value in self.grasp_offset_arm_m):
+            raise ValueError("env_frames.grasp_offset_arm_m must be finite")
+        if any(abs(float(value)) > 0.1 for value in self.grasp_offset_arm_m):
+            raise ValueError(
+                "env_frames.grasp_offset_arm_m must have |each value| <= 0.1 m "
+                f"(got {self.grasp_offset_arm_m!r})"
+            )
+        return self
+
+
 class PickSettings(Model):
     task: Literal["pick"]
     fixture_only: bool = True
     frames: PickFrames
+    env_frames: EnvFramesSettings = Field(default_factory=EnvFramesSettings)
     profile: PickProfile
     limits: PickLimits = Field(default_factory=PickLimits)
     arm: ArmSettings = Field(default_factory=ArmSettings)
@@ -392,9 +581,24 @@ class PickSettings(Model):
     vision: VisionSettings = Field(default_factory=VisionSettings)
 
     @property
+    def object_frame(self) -> str | None:
+        """Effective object frame: env-derived in env mode, else frames.object."""
+        return self.env_frames.object_frame if self.env_frames.enabled else self.frames.object
+
+    @property
+    def place_frame(self) -> str | None:
+        """Effective place frame: env tf_static frame in env mode, else frames.place."""
+        return self.env_frames.place_frame if self.env_frames.enabled else self.frames.place
+
+    @property
+    def grasp_target_frame(self) -> str | None:
+        """Effective vision target frame; env mode never uses a grasp_target TF."""
+        return None if self.env_frames.enabled else self.frames.grasp_target
+
+    @property
     def place_enabled(self) -> bool:
-        """True when the place pose is read from TF (frames.place configured)."""
-        return self.frames.place is not None
+        """True when the place pose is read from TF (frames.place or env_frames)."""
+        return self.env_frames.enabled or self.frames.place is not None
 
     @property
     def vision_enabled(self) -> bool:
@@ -409,6 +613,35 @@ class PickSettings(Model):
             raise ValueError(
                 "ros2.base_frame must equal frames.arm_base: plans are produced in "
                 f"{self.frames.arm_base}, adapter TF reads {self.ros2.base_frame}"
+            )
+        if self.env_frames.enabled:
+            if self.vision.enabled:
+                raise ValueError(
+                    "env_frames.enabled and vision.enabled are mutually exclusive: env mode "
+                    "reads one /tf snapshot (no visual servo / refresh service)"
+                )
+            if self.frames.object is not None:
+                raise ValueError(
+                    "frames.object must be omitted when env_frames.enabled: the object frame "
+                    f"is derived as {self.env_frames.object_frame!r}"
+                )
+            if self.frames.grasp_target is not None:
+                raise ValueError(
+                    "frames.grasp_target must be omitted when env_frames.enabled: env mode "
+                    "uses the object TF position plus the top-grasp reference orientation"
+                )
+            if self.frames.place is not None:
+                raise ValueError(
+                    "frames.place must be omitted when env_frames.enabled: the place frame "
+                    f"comes from env_frames.place_frame ({self.env_frames.place_frame!r})"
+                )
+            if self.env_frames.object_frame in (self.frames.root, self.frames.arm_base):
+                raise ValueError(
+                    "env_frames derived object frame must differ from frames.root/arm_base"
+                )
+        elif self.frames.object is None:
+            raise ValueError(
+                "frames.object is required unless env_frames.enabled supplies the object frame"
             )
         if self.vision.enabled and self.frames.grasp_target is None:
             raise ValueError(

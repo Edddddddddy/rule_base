@@ -54,6 +54,8 @@ def test_every_declared_config_loads():
         ROOT / "configs/pick_place/live_ros2_vision_instance.yaml",
         ROOT / "configs/pick_place/live_ros2_teach.yaml",
         ROOT / "configs/pick_place/mock_ros2_instance.yaml",
+        # Env position-subscription mode (env_app TF object + tf_static place).
+        ROOT / "configs/pick_place/live_ros2_env.yaml",
     ]
     for config in configs:
         settings = load_settings(config)
@@ -67,6 +69,7 @@ def test_instance_configs_disable_lease_management():
         "mock_ros2_instance.yaml",
         "live_ros2_vision_instance.yaml",
         "live_ros2_teach.yaml",
+        "live_ros2_env.yaml",
     ):
         settings = load_settings(ROOT / "configs/pick_place" / name)
         assert settings.arm.acquire_control is True, name

@@ -101,8 +101,8 @@ def _observation_pose(settings: PickSettings, scene: PickScene, grasp: Pose) -> 
 
 
 def _place_pose(settings: PickSettings, scene: PickScene) -> Pose | None:
-    """Place pose read from frames.place, validated for a top-grasp descent."""
-    frame = settings.frames.place
+    """Place pose read from the effective place TF (frames.place or env place_frame)."""
+    frame = settings.place_frame
     if frame is None:
         return None
     if scene.arm_to_place is None:
@@ -159,9 +159,7 @@ def _target_grasp(settings: PickSettings, scene: PickScene) -> Pose:
     return grasp
 
 
-def _align_target_closing_axis(
-    settings: PickSettings, scene: PickScene, grasp: Pose
-) -> Pose:
+def _align_target_closing_axis(settings: PickSettings, scene: PickScene, grasp: Pose) -> Pose:
     """Pick the 180°-equivalent top-grasp roll that the calibrated profile supports.
 
     A single ArUco marker fixes the target yaw, so the vision target can ask for
@@ -235,6 +233,82 @@ def _plan_from_target(settings: PickSettings, scene: PickScene) -> PickPlan:
     )
 
 
+def _env_grasp_pose(settings: PickSettings, scene: PickScene) -> Pose:
+    """Env-mode grasp TCP: env marker position + TCP-frame top-grasp contact offset.
+
+    The env node publishes ``env_marker_<target_object_id>`` in ``frames.arm_base``.
+    The grasp orientation is always the calibrated top-grasp reference converted to
+    the arm frame; ``profile.grasp_contact_offset_tcp_m`` is expressed in the TCP
+    frame and therefore rotated by that reference orientation.  The marker rotation
+    is deliberately not consumed: the env camera places the marker on the object,
+    while the grasp stays a calibrated fixed top grasp.
+    """
+    env = settings.env_frames
+    profile = settings.profile
+    if scene.arm_to_object is None:
+        raise ContractError(
+            f"Pick env object TF is missing: {settings.frames.arm_base} <- {env.object_frame}"
+        )
+    root_to_arm = np.asarray(scene.root_to_arm)
+    arm_to_root = np.asarray(inverse(scene.root_to_arm))
+    reference = profile.reference_tcp_orientation_root_xyzw
+    marker_arm = np.asarray(to_pose(scene.arm_to_object).position)
+    marker_root = root_to_arm[:3, :3] @ marker_arm + root_to_arm[:3, 3]
+    contact_root = _rotation(reference) @ np.asarray(profile.grasp_contact_offset_tcp_m)
+    grasp_root = from_pose(Pose(tuple(marker_root + contact_root), reference))
+    grasp = to_pose(compose(arm_to_root, grasp_root))
+    # Field calibration in the arm/command frame: the env marker only exposes the
+    # marker plane, while the top grasp needs the fingertip contact point (contact
+    # depth below the marker) and absorbs residual marker/extrinsics bias.
+    grasp_offset = np.asarray(env.grasp_offset_arm_m, dtype=float)
+    if np.any(grasp_offset):
+        grasp = Pose(tuple(np.asarray(grasp.position) + grasp_offset), grasp.orientation)
+    root_grasp = np.asarray(compose(scene.root_to_arm, from_pose(grasp)))
+    limit = settings.limits.max_cube_tilt_rad
+    approach_tilt = math.acos(float(np.clip(-root_grasp[2, 0], -1.0, 1.0)))
+    closing_tilt = math.asin(float(np.clip(abs(root_grasp[2, 1]), 0.0, 1.0)))
+    if approach_tilt > limit or closing_tilt > limit:
+        raise ContractError(
+            "Pick env grasp pose must keep the TCP approach axis down and the closing "
+            f"axis horizontal: approach_tilt_rad={approach_tilt:.6f}, "
+            f"closing_tilt_rad={closing_tilt:.6f}, limit_rad={limit:.6f}"
+        )
+    workspace(grasp, settings)
+    return grasp
+
+
+def _plan_from_env(settings: PickSettings, scene: PickScene) -> PickPlan:
+    """Plan from the one env snapshot (object marker + tf_static place frame)."""
+    profile = settings.profile
+    grasp = _env_grasp_pose(settings, scene)
+    root_arm_rotation = np.asarray(scene.root_to_arm)[:3, :3]
+    pregrasp = offset(
+        grasp, tuple(root_arm_rotation.T @ np.array([0.0, 0.0, profile.pregrasp_clearance_m]))
+    )
+    workspace(pregrasp, settings)
+    # The env marker rotation is not the cube axis convention, so keep the
+    # calibrated cube-side interval instead of projecting a face width; the live
+    # measured-width contact gate still decides grasp success.
+    expected_width = profile.cube_side_m
+    min_width = profile.grasp_min_width_m
+    max_width = profile.grasp_max_width_m
+    if not (profile.gripper_closed_m < min_width < max_width < profile.gripper_open_m):
+        raise ContractError(
+            "Pick env grasp width interval does not fit gripper: "
+            f"interval_m=({min_width}, {max_width}), open_width_m={profile.gripper_open_m}"
+        )
+    return PickPlan(
+        grasp=grasp,
+        pregrasp=pregrasp,
+        observation=_observation_pose(settings, scene, grasp),
+        calibration_revision=profile.calibration_revision,
+        expected_cube_width_m=expected_width,
+        grasp_min_width_m=min_width,
+        grasp_max_width_m=max_width,
+        place=_place_pose(settings, scene),
+    )
+
+
 def first_observation_pose(settings: PickSettings) -> Pose:
     """Fixed wide-view observation TCP pose for ``vision.observe_first`` (D-127).
 
@@ -252,6 +326,8 @@ def plan_pick(
     *,
     previous_grasp_root: Quaternion | None = None,
 ) -> PickPlan:
+    if settings.env_frames.enabled:
+        return _plan_from_env(settings, scene)
     if settings.frames.grasp_target is not None:
         return _plan_from_target(settings, scene)
     profile = settings.profile
@@ -312,8 +388,8 @@ def pick_plan_fields(settings: PickSettings, scene: PickScene, plan: PickPlan) -
     return {
         "root_frame": settings.frames.root,
         "arm_base_frame": settings.frames.arm_base,
-        "object_frame": settings.frames.object,
-        "place_frame": settings.frames.place,
+        "object_frame": settings.object_frame,
+        "place_frame": settings.place_frame,
         "calibration_revision": plan.calibration_revision,
         "field_validated": profile.field_validated,
         "root_to_arm": scene.root_to_arm,
@@ -333,7 +409,8 @@ def pick_plan_fields(settings: PickSettings, scene: PickScene, plan: PickPlan) -
             and float(
                 np.asarray(compose(scene.root_to_arm, scene.arm_to_target))[:3, 1]
                 @ _rotation(profile.reference_tcp_orientation_root_xyzw)[:, 1]
-            ) < 0.0
+            )
+            < 0.0
         ),
         "grasp_pose_root": asdict(to_pose(root_grasp)),
         "pregrasp_pose_root": asdict(to_pose(compose(scene.root_to_arm, from_pose(plan.pregrasp)))),
@@ -368,17 +445,17 @@ def format_pick_plan_log(settings: PickSettings, scene: PickScene, plan: PickPla
     arm_object = to_pose(scene.arm_to_object)
     object_center = cast(tuple[float, float, float], fields["object_center_arm_m"])
     lines = [
-        f"[rule_base] target object {settings.frames.object} "
+        f"[rule_base] target object {settings.object_frame} "
         f"center_{arm_base}={_format_log_numbers(object_center)} m "
         f"orientation_xyzw={_format_log_numbers(arm_object.orientation)}"
     ]
     place = fields["place_pose_arm"]
-    if place is None or settings.frames.place is None:
+    if place is None or settings.place_frame is None:
         lines.append("[rule_base] place=(disabled)")
     else:
         place_pose = cast(dict[str, tuple[float, ...]], place)
         lines.append(
-            f"[rule_base] place {settings.frames.place} "
+            f"[rule_base] place {settings.place_frame} "
             f"center_{arm_base}={_format_log_numbers(place_pose['position'])} m "
             f"orientation_xyzw={_format_log_numbers(place_pose['orientation'])}"
         )

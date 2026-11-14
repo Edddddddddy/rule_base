@@ -64,7 +64,7 @@ class PickObservationCache:
             self._object_not_before_ns = now
             self._object_stamp_ns = 0
             self._require_dynamic_object = not self._static_object_seen
-            if self.settings.frames.grasp_target is not None:
+            if self.settings.grasp_target_frame is not None:
                 self._target_not_before_ns = now
                 self._target_stamp_ns = 0
                 self._require_dynamic_target = not self._static_target_seen
@@ -83,17 +83,18 @@ class PickObservationCache:
             raise ContractError(f"unknown observation channel {key}")
         with self._lock:
             self.tf.update(payload(message), static=key == "tf_static")
-            frames = self.settings.frames
+            object_frame = self.settings.object_frame
+            target_frame = self.settings.grasp_target_frame
             for item in field(payload(message), "transforms"):
                 child = field(item, "child_frame_id")
-                if child == frames.object:
+                if object_frame is not None and child == object_frame:
                     if key == "tf":
                         self._object_stamp_ns = max(
                             self._object_stamp_ns, stamp_ns(field(item, "header"))
                         )
                     else:
                         self._static_object_seen = True
-                elif frames.grasp_target is not None and child == frames.grasp_target:
+                elif target_frame is not None and child == target_frame:
                     if key == "tf":
                         self._target_stamp_ns = max(
                             self._target_stamp_ns, stamp_ns(field(item, "header"))
@@ -102,11 +103,11 @@ class PickObservationCache:
                         self._static_target_seen = True
 
     def robot_ready(self) -> bool:
-        """Warm-up gate for vision observe_first：只要求 root→arm_base 机器链可达。
+        """Warm-up gate for the deferred-snapshot modes (vision observe_first / env).
 
-        视觉 `observe_first` 设计是「先到观察位再检测」，折叠 rest 时 vision 节点还没有
-        发布 `objects_cube_01`（object/grasp_target/place TF 都可能不存在）；因此 warmup
-        只查机器人根→臂 TF，不要求物体/目标 TF。返回 True；不可达/过期抛 ContractError。
+        这两种模式都是「先到观察位再取目标」，折叠 rest 时目标 TF 可能还不存在
+        （视觉节点未检测 / env 相机看不到物体），因此 warmup 只查机器人根→臂 TF，
+        不要求 object/place/grasp_target TF。返回 True；不可达/过期抛 ContractError。
         """
         with self._lock:
             self.check_health()
@@ -118,43 +119,51 @@ class PickObservationCache:
         with self._lock:
             self.check_health()
             frames = self.settings.frames
-            if (
-                self._require_dynamic_object
-                and self._object_stamp_ns < self._object_not_before_ns
-            ):
+            object_frame = self.settings.object_frame
+            place_frame = self.settings.place_frame
+            target_frame = self.settings.grasp_target_frame
+            if object_frame is None:  # defensive: config validation requires one source
+                raise ContractError("Pick object TF frame is not configured")
+            if self._require_dynamic_object and self._object_stamp_ns < self._object_not_before_ns:
                 raise ContractError(
                     f"{self._sample_reason} requires new object TF after return to initial pose"
                 )
             if (
-                frames.grasp_target is not None
+                target_frame is not None
                 and self._require_dynamic_target
                 and self._target_stamp_ns < self._target_not_before_ns
             ):
                 raise ContractError(
                     f"{self._sample_reason} requires new grasp_target TF sample: "
-                    f"{frames.arm_base} <- {frames.grasp_target}"
+                    f"{frames.arm_base} <- {target_frame}"
                 )
-            pairs = [(frames.root, frames.arm_base), (frames.arm_base, frames.object)]
+            pairs = [(frames.root, frames.arm_base), (frames.arm_base, object_frame)]
             optional: list[str] = []
-            if frames.place is not None:
-                pairs.append((frames.arm_base, frames.place))
+            if place_frame is not None:
+                pairs.append((frames.arm_base, place_frame))
                 optional.append("place")
-            if frames.grasp_target is not None:
-                pairs.append((frames.arm_base, frames.grasp_target))
+            if target_frame is not None:
+                pairs.append((frames.arm_base, target_frame))
                 optional.append("target")
-            dynamic_pair = (frames.arm_base, frames.object) if self._require_dynamic_object else None
+            dynamic_pair = (frames.arm_base, object_frame) if self._require_dynamic_object else None
             try:
                 matrices = self.tf.lookup_many(pairs, dynamic_pair=dynamic_pair)
             except ContractError as exc:
                 message = str(exc)
-                if (
-                    frames.grasp_target is not None
-                    and "TF path unavailable" in message
-                    and frames.grasp_target in message
-                ):
+                missing = [
+                    name
+                    for name in (object_frame, place_frame, target_frame)
+                    if name is not None and name in message
+                ]
+                if "TF path unavailable" in message and missing:
+                    frame_name = missing[0]
+                    kind = (
+                        "grasp_target"
+                        if target_frame is not None and frame_name == target_frame
+                        else ("place" if frame_name == place_frame else "object")
+                    )
                     raise ContractError(
-                        f"Pick grasp_target TF is missing: "
-                        f"{frames.arm_base} <- {frames.grasp_target}"
+                        f"Pick {kind} TF is missing: {frames.arm_base} <- {frame_name}"
                     ) from exc
                 if dynamic_pair is None or "no dynamic sample" not in message:
                     raise
@@ -164,15 +173,13 @@ class PickObservationCache:
                 matrices = self.tf.lookup_many(pairs)
             root_arm, arm_object, *rest = matrices
             found = dict(zip(optional, rest, strict=True))
-            return PickScene(
-                root_arm, arm_object, found.get("place"), found.get("target")
-            )
+            return PickScene(root_arm, arm_object, found.get("place"), found.get("target"))
 
     def sample_age_s(self) -> float | None:
         """Age of the freshest dynamic object/target sample used by the last scene."""
         with self._lock:
             stamps = [self._object_stamp_ns]
-            if self.settings.frames.grasp_target is not None:
+            if self.settings.grasp_target_frame is not None:
                 stamps.append(self._target_stamp_ns)
             freshest = max(stamps)
             if not freshest:

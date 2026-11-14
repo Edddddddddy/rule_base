@@ -33,7 +33,7 @@ from rule_base.infrastructure.transform.math import (
 )
 from rule_base.observability.events import event
 
-from . import joint_motion, vision_servo
+from . import env_snapshot, joint_motion, vision_servo
 from .planning import format_pick_plan_log, pick_plan_fields, plan_pick, workspace
 
 
@@ -97,10 +97,14 @@ class PickRound:
         cleanup_errors: list[str] = []
         try:
             self._cancel()
-            if not (self.settings.vision.enabled and self.settings.vision.observe_first):
+            deferred_plan = self.settings.env_frames.enabled or (
+                self.settings.vision.enabled and self.settings.vision.observe_first
+            )
+            if not deferred_plan:
                 # Legacy flow: plan from the object TF visible at the start pose.
-                # With observe_first the round deliberately plans only after the
-                # fixed observation move + vision refresh (D-127).
+                # Env mode deliberately snapshots only after the observation move;
+                # observe_first does the same after the fixed observation move +
+                # vision refresh (D-127).
                 scene = self.environment.snapshot()
                 self.plan = plan_pick(self.settings, scene)
                 self._scene = scene
@@ -243,8 +247,11 @@ class PickRound:
         rest pose is outside the grasp workspace) and stays interruptible.
         """
         self._move_joints_to(
-            self.settings.ros2.home_joint_positions, stage=stage,
-            event_name="home_complete", feedback_name="home_feedback")
+            self.settings.ros2.home_joint_positions,
+            stage=stage,
+            event_name="home_complete",
+            feedback_name="home_feedback",
+        )
 
     def _move_joints_to(
         self,
@@ -258,9 +265,15 @@ class PickRound:
     ) -> None:
         """Joint-space move (shared home/observe implementation in ``joint_motion``)."""
         joint_motion.stream_joints(
-            self, target_joint_positions, stage=stage, event_name=event_name,
-            feedback_name=feedback_name, tolerance_rad=tolerance_rad,
-            timeout_s=timeout_s, emit=event)
+            self,
+            target_joint_positions,
+            stage=stage,
+            event_name=event_name,
+            feedback_name=feedback_name,
+            tolerance_rad=tolerance_rad,
+            timeout_s=timeout_s,
+            emit=event,
+        )
 
     def _joints_settled(self, feedback: Feedback) -> bool:
         return bool(feedback.joint_velocities) and all(
@@ -470,11 +483,7 @@ class PickRound:
         width = feedback.gripper_width_m
         if self._grasp_width_m is None:
             margin = profile.grasp_contact_margin_m
-            return (
-                profile.gripper_closed_m + margin
-                < width
-                < profile.gripper_open_m - margin
-            )
+            return profile.gripper_closed_m + margin < width < profile.gripper_open_m - margin
         return abs(width - self._grasp_width_m) <= profile.grasp_width_tolerance_m
 
     def _grasp_diagnostics(self, feedback: Feedback) -> dict[str, object]:
@@ -686,6 +695,19 @@ class PickRound:
 
     def _reidentify(self) -> None:
         assert self._scene is not None
+        if self.settings.env_frames.enabled:
+            # Env mode keeps one snapshot per round for the normal path; a retry
+            # (only with max_grasp_attempts > 1) re-reads one bounded snapshot at
+            # the current pose instead of following the env TF per frame.
+            self.plan = None
+            self._stage("reidentify")
+            self.environment.request_new_observation()
+            env_snapshot.snapshot_and_plan(
+                self,
+                event_name="pick_retry_plan",
+                extra_fields={"attempt": self.attempt},
+            )
+            return
         previous = (
             to_pose(compose(self._scene.root_to_arm, from_pose(self.plan.grasp))).orientation
             if self.plan is not None
@@ -726,7 +748,8 @@ class PickRound:
     def _execute(self) -> None:
         assert self.arm is not None
         assert self.plan is not None or (
-            self.settings.vision.enabled and self.settings.vision.observe_first
+            self.settings.env_frames.enabled
+            or (self.settings.vision.enabled and self.settings.vision.observe_first)
         )
         limits = self.settings.limits
         for attempt in range(1, limits.max_grasp_attempts + 1):
@@ -749,7 +772,11 @@ class PickRound:
                     self.arm.acquire()
                     self._home("home_start")
                     self._initialize_servo()
-                    if self.settings.vision.enabled and self.settings.vision.observe_first:
+                    if self.settings.env_frames.enabled:
+                        # Env mode: fixed observation pose first, then one bounded
+                        # TF snapshot (env object marker + tf_static place frame).
+                        env_snapshot.observe_and_plan(self)
+                    elif self.settings.vision.enabled and self.settings.vision.observe_first:
                         observe_joints = self.settings.vision.observe_joint_positions
                         if observe_joints is not None:
                             # task-33：rest → 关节空间到用户手动观察位（绕开 IK_FAILED），
@@ -779,9 +806,9 @@ class PickRound:
             except Exception as exc:
                 failed_stage = self.stage
                 if (
-                    failed_stage
-                    in {"home_start", "home_end", "grasp_verify", "pregrasp_verify"}
+                    failed_stage in {"home_start", "home_end", "grasp_verify", "pregrasp_verify"}
                     or failed_stage.startswith("vision_")
+                    or failed_stage.startswith("env_")
                     or vision_servo.is_ik_denial(str(exc))
                 ):
                     # Homing is not a grasp attempt: the grasp recovery/retry path

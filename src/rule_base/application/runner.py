@@ -38,6 +38,7 @@ class InstanceRunner:
         rounds: int = 1,
         before_round: Callable[[], None] | None = None,
         round_id: str | None = None,
+        robot_only_warmup: bool | None = None,
         vision_observe_first: bool = False,
     ) -> None:
         if rounds < 1:
@@ -53,9 +54,13 @@ class InstanceRunner:
         # L6 采集编排（S2-5）：首轮可用编排器注入的 round id，使 recorder metadata 与
         # round_result.round_id 同源；其余轮次/缺省仍内部 uuid4（向后兼容）。
         self.round_id = round_id
-        # S6b：vision observe_first 的 warmup 只等机器链（root→arm_base），不等物体 TF
-        # （折叠 rest 时视觉节点尚未检测/发布 object TF）。
-        self.vision_observe_first = bool(vision_observe_first)
+        # Deferred-snapshot modes (vision observe_first / env position mode) warm up
+        # only the machine chain (root→arm_base): the object TF may not exist at the
+        # folded rest pose. `vision_observe_first` is kept as a backwards-compatible
+        # alias for the pre-existing call sites/tests.
+        self.robot_only_warmup = bool(
+            robot_only_warmup if robot_only_warmup is not None else vision_observe_first
+        )
 
     async def run(self) -> int:
         worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="station-arm")
@@ -118,8 +123,8 @@ class InstanceRunner:
                 raise ContractError("stop requested during warmup")
             self.transport.check_health()
             try:
-                if self.vision_observe_first:
-                    robot_ready = getattr(self.environment, 'robot_ready', None)
+                if self.robot_only_warmup:
+                    robot_ready = getattr(self.environment, "robot_ready", None)
                     if robot_ready is not None:
                         robot_ready()
                     else:  # 兼容旧自定义 environment：退回完整 snapshot
@@ -134,18 +139,27 @@ class InstanceRunner:
 
 
 def validate_live_grasp_source(settings: PickSettings) -> None:
-    """D-142: live grasp coordinates must come from the real-time vision target.
+    """D-142: live grasp coordinates must come from a live TF position source.
 
     The legacy path derives the grasp from the object TF (``frames.object``, fed by
     the fixed-point scene publisher); the user requires live position data only, so
-    ``--run`` refuses it. ``--dry-run``/fake rounds keep supporting the legacy
-    template for tests and the static mock chain.
+    ``--run`` refuses it. Live sources allowed by ``--run`` are:
+
+    * the real-time wrist-ArUco vision target (``frames.grasp_target``), and
+    * the env position-subscription mode (``env_frames.enabled``: one live
+      ``env_marker_<id>`` TF snapshot + ``tf_static`` place frame per round).
+
+    ``--dry-run``/fake rounds keep supporting the legacy template for tests and the
+    static mock chain.
     """
+    if settings.env_frames.enabled:
+        return
     if settings.frames.grasp_target is None:
         raise ValueError(
-            "live execution requires the vision grasp_target frame (D-142): static "
-            "object-frame grasp coordinates are disabled; use "
-            "configs/pick_place/live_ros2_vision.yaml"
+            "live execution requires a live grasp position source (D-142): configure "
+            "the vision grasp_target frame (configs/pick_place/live_ros2_vision.yaml) or "
+            "env_frames (configs/pick_place/live_ros2_env.yaml); static object-frame "
+            "grasp coordinates are disabled"
         )
 
 
@@ -202,8 +216,10 @@ async def serve(
                 warmup_timeout_s=settings.limits.warmup_timeout_s,
                 rounds=rounds,
                 round_id=round_id,
-                vision_observe_first=bool(
-                    settings.vision.enabled and settings.vision.observe_first),
+                robot_only_warmup=bool(
+                    settings.env_frames.enabled
+                    or (settings.vision.enabled and settings.vision.observe_first)
+                ),
             )
         else:
             from rule_base.infrastructure.fakes.runtime import (
@@ -222,8 +238,10 @@ async def serve(
                 rounds=rounds,
                 before_round=pick_environment.publish_object,
                 round_id=round_id,
-                vision_observe_first=bool(
-                    settings.vision.enabled and settings.vision.observe_first),
+                robot_only_warmup=bool(
+                    settings.env_frames.enabled
+                    or (settings.vision.enabled and settings.vision.observe_first)
+                ),
             )
         event(
             "startup",

@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- **2026-11-14 · 新增 env 位置订阅模式（第三种坐标来源，additive；用户现场架构要求）**：
+  - **背景**：用户要求不使用固定静态示教、不使用腕部检测，物体 id+坐标改由 env_app 发布的
+    动态 TF `env_marker_<target_object_id>` 提供，放置坐标由其 `/tf_static` 的 `place_target_01`
+    提供；**观察位到位后读一次快照，整轮复用**（不逐帧跟随）。
+  - **配置**：`configs/pick_place/live_ros2_env.yaml`（新增；不改已真机验收的
+    `live_ros2_teach.yaml`/`real_pick.yaml`/`submission.yaml`/`teach_points.yaml`）；
+    `PickSettings` 新增 `env_frames:` 段（`enabled/object_tf_prefix/target_object_id/
+    place_frame/snapshot_timeout_s/observe_*/observe_settle_s`），默认关闭；`target_object_id`
+    支持 `RULE_BASE_TARGET_OBJECT_ID` 环境变量覆盖（空值 → 配置错误；非 env 配置忽略）。
+    配置校验：env 模式禁止同时配置 `vision.enabled`/`frames.object`/`frames.grasp_target`/
+    `frames.place`；非 env 模式 `frames.object` 仍必填；`PickFrames.object` 变为可选。
+  - **执行**：`stations/pick_place/env_snapshot.py`（新增）：home_start/initialize_servo 后到观察位
+    （`observe_joint_positions` 关节空间，缺省 TCP 观察位）→ settle → 有界重试取一次快照
+    （`snapshot_timeout_s`）→ `pick_plan`；TF 缺失/超时 → `env snapshot timed out ...` 整轮失败
+    （stage `env_snapshot`，不进入抓取恢复、不夹爪）。`PickRound` 在 env 模式下把规划推迟到
+    观察位之后；warmup 只等 `root→arm_base`（`InstanceRunner.robot_only_warmup`，保留
+    `vision_observe_first` 兼容别名）。
+  - **几何**：grasp TCP = marker 位置 + `profile.grasp_contact_offset_tcp_m`（TCP 系按顶抓参考
+    旋转合成），姿态恒为 `reference_tcp_orientation_root_xyzw`（D-047）；pregrasp/observation/
+    post_grasp/place approach/retreat 沿用 `real_pick.yaml`；env 模式宽度区间直接用 profile
+    `cube_side_m`/`grasp_min/max_width_m`（marker 旋转不当作立方体轴，实测闭合宽度仍决定成败）。
+  - **TF 缓存**：`PickObservationCache` 改用有效帧（env 模式 object=`env_marker_<id>`、
+    place=env `place_frame`、不要求 grasp_target；缺失时报
+    `Pick object/place TF is missing: base_link <- ...`）；`FakePickEnvironment` 同步支持 env
+    模式（marker 动态 `/tf` + place 一次性 `/tf_static`）。
+  - **现场标定偏置 `env_frames.grasp_offset_arm_m`（2026-11-14 真机首轮反馈）**：env 只发码面
+    位姿，首轮真机因「TCP = 码面位置」在方块顶部上方闭合而空夹（close 宽度 0.0047 m）。新增
+    arm 系固定抓取偏置（`|每轴|<=0.1 m`，配置校验 fail-closed）：grasp TCP = marker 位置 +
+    `profile.grasp_contact_offset_tcp_m` + `grasp_offset_arm_m`；方法 = 手拖正确抓取 TCP −
+    同时刻 env_marker 位姿。现场两轮：`[-0.0008, 0.0086, -0.0093]`（方块 x≈0.23）与最终
+    `[0.0014, 0.0090, -0.0114]`（方块移至 x≈0.28 可达区后；当前 `live_ros2_env.yaml` 值）。
+    另：任务 marker 实际边长 2 cm（env site 配置 `marker_size_m: 0.020`，与 discover
+    `objects_aruco_2cm` 一致；按 18 mm 估会把位姿整体缩向相机约 2.7 cm）。
+  - **2026-11-14 真机验证（env 模式，domain 0）**：链路已验证——env 动态 `/tf`
+    `base_link→env_marker_1`（~15–20 Hz）+ env `/tf_static` `base_link→place_target_01`
+    （[0.229637, 0.149113, 0.008321]）→ 观察位 `env_observe_joints` → 单次 `env_snapshot`
+    （`env_marker_1`/`place_target_01`）→ `pick_plan` → 臂运动至规划抓取位 → 合爪/恢复/home
+    全流程跑通、事件与失败语义符合契约（cleanup_confirmed=true，exit 0）。**抓取成功未达成**：
+    4 次真机尝试均为空夹（合爪宽度≈0.005 m）；归因 = env 外参 `review_required`（14.3 mm/
+    2.81°）导致的目标位姿精度不足 + 方块在观察/下探路径上被碰移（env 位姿快照前后变化 5–10 mm）
+    + 抓取深度需按物体逐个标定；下一步需提升 env 外参标定精度或改「物体中心+夹持深度」由上游
+    任务规格给出后再复验。真机证据见 workspace `.scratch/real-verification/evidence/
+    env_rule_base_integration/`。
+  - **D-142**：`validate_live_grasp_source()` 允许 env 模式作为 live 位置来源（与实时视觉
+    `frames.grasp_target` 并列）；仅静态 `frames.object` 的配置仍被 `--run` 拒绝。
+  - **测试**：新增 `tests/unit/test_pick_env_frames.py`（32 项：配置/环境变量覆盖/非法 id/
+    互斥校验/快照几何（marker 位置+contact offset+根臂帧换算+忽略 marker 旋转）/tf 缓存快照/
+    单快照轮次/快照重试/快照超时/warmup 门），smoke 配置清单加入新配置。
+    `pytest tests/unit tests/smoke -q` → **516 passed**（基线 484 + 32）；现有 teach/vision/mock
+    路径零回归（分支 additive、默认关闭）。真机未验证（需 env_app 与现场窗口）。
 - **2026-11-13 · v0.7 tools/ 废除：mock 夹具消费路径 env 化 + 实例 E2E 对齐 contracts R14（仅测试/文档，业务代码零改动）**：
   - `tests/integration/instance_e2e_support.py`：`FAKE_MANAGER` 改为 `MOCK_FIXTURES_DIR`（默认
     `<ws>/factory_manager/local/integration/mocks`；缺失时 `pytest.skip` 并给修复命令），不再写死顶层 `tools/mocks`；

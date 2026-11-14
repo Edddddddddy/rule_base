@@ -97,7 +97,23 @@ class FakePickEnvironment:
             zip("xyzw", PICK_MOCK_ROOT_TO_ARM.orientation, strict=True)
         )
         self.cache.update("tf_static", {"transforms": [root_arm]})
+        if settings.env_frames.enabled:
+            # Env mode: the place target is a tf_static frame (published once), while
+            # the object marker is a dynamic /tf frame re-published below.
+            self._publish_env_place_static()
         self.publish_object()
+
+    def _publish_env_place_static(self) -> None:
+        """Env mode: publish the tf_static place frame (parent arm_base) once."""
+        f = self.settings.frames
+        place_frame = self.settings.place_frame
+        if place_frame is None:  # defensive: env config validation requires it
+            return
+        arm_place = tf_entry(f.arm_base, place_frame, PICK_MOCK_PLACE_POSE.position, timestamp_ns=0)
+        arm_place["transform"]["rotation"] = dict(
+            zip("xyzw", PICK_MOCK_PLACE_POSE.orientation, strict=True)
+        )
+        self.cache.update("tf_static", {"transforms": [arm_place]})
 
     def _default_target(self) -> Pose:
         """Top-grasp TCP 4 cm above the object centre (back along the approach axis)."""
@@ -114,29 +130,37 @@ class FakePickEnvironment:
 
     def publish_object(self) -> None:
         f = self.settings.frames
+        object_frame = self.settings.object_frame
+        place_frame = self.settings.place_frame
+        target_frame = self.settings.grasp_target_frame
         stamp = time.time_ns()
         arm_object = tf_entry(
-            f.arm_base, f.object, PICK_MOCK_OBJECT_POSE.position, timestamp_ns=stamp
+            f.arm_base, object_frame, PICK_MOCK_OBJECT_POSE.position, timestamp_ns=stamp
         )
         arm_object["transform"]["rotation"] = dict(
             zip("xyzw", PICK_MOCK_OBJECT_POSE.orientation, strict=True)
         )
         transforms = [arm_object]
-        if f.place is not None:
+        if self.settings.env_frames.enabled:
+            # The env place frame is static (published once in __init__); only the
+            # dynamic object marker is refreshed every cycle.
+            self.cache.update("tf", {"transforms": transforms})
+            return
+        if place_frame is not None:
             arm_place = tf_entry(
-                f.arm_base, f.place, PICK_MOCK_PLACE_POSE.position, timestamp_ns=stamp
+                f.arm_base, place_frame, PICK_MOCK_PLACE_POSE.position, timestamp_ns=stamp
             )
             arm_place["transform"]["rotation"] = dict(
                 zip("xyzw", PICK_MOCK_PLACE_POSE.orientation, strict=True)
             )
             transforms.append(arm_place)
-        if f.grasp_target is not None and self.publish_target:
+        if target_frame is not None and self.publish_target:
             object_target = to_pose(
                 compose(inverse(from_pose(PICK_MOCK_OBJECT_POSE)), from_pose(self.target_pose))
             )
             arm_target = tf_entry(
-                f.object,
-                f.grasp_target,
+                object_frame,
+                target_frame,
                 object_target.position,
                 timestamp_ns=stamp,
                 orientation_xyzw=object_target.orientation,

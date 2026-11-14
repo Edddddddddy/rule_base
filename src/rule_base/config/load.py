@@ -36,6 +36,21 @@ def load_settings(path: Path) -> PickSettings:
         if not isinstance(profile, dict):
             raise ValueError("Pick profile must be a YAML mapping")
         profile["hold_duration_s"] = hold_duration
+    env_target_id = os.environ.get("RULE_BASE_TARGET_OBJECT_ID")
+    env_frames = values.get("env_frames")
+    if env_target_id is not None and isinstance(env_frames, dict):
+        # Upstream object selection (env position-subscription mode only; other
+        # coordinate sources ignore the variable). An explicit empty value is a
+        # config error rather than a silent fallback to the YAML id.
+        selected = env_target_id.strip()
+        if not selected:
+            raise ValueError(
+                "RULE_BASE_TARGET_OBJECT_ID must not be empty when set "
+                "(unset it to keep the env_frames.target_object_id from the config)"
+            )
+        section = dict(env_frames)
+        section["target_object_id"] = selected
+        values["env_frames"] = section
     return PickSettings.model_validate(values)
 
 
