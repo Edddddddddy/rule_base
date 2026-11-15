@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **2026-11-15 · 真机窗口抓取偏置修正（env 模式默认配置；用户现场确认写回仓库）**：
+  - **背景/真机证据（Lead 提供）**：今日真机 env 模式复验（HEAD 839203d，仓库默认
+    `grasp_offset_arm_m=[0.0039, 0.0177, -0.0147]`）连续两次空夹（合爪宽度≈0.005 m）；
+    用户现场要求把抓取点向下移 2 cm，`/tmp` 副本改为 `[0.0039, 0.0177, -0.0347]` 后真机
+    抓取成功：`grasp_feedback width_m=0.013359 m`、`width_ok=true`（contact width 一致）、
+    `round_result=completed`、`cleanup_confirmed=true`。
+  - **改动**：`configs/pick_place/live_ros2_env.yaml` 的 `env_frames.grasp_offset_arm_m`
+    写回 `[0.0039, 0.0177, -0.0347]` 作为最新现场标定，字段注释补 2026-11-15 窗口说明
+    （向下 2 cm 修正后抓取成功、width≈0.01336 m；偏置仍按物体/码面尺寸逐次标定）；
+    `tests/unit/test_pick_env_frames.py` 硬编码期望同步（断言强度不变）；
+    `docs/ros2-adapter.md` §9.2 现场标定记录补 ④ 与当前值（旧值标注为历史窗口值）。
+  - **验证（离线）**：`PYTHONPATH=$PWD/src:$PYTHONPATH /usr/bin/python3 -m pytest tests/unit
+    tests/smoke -q` → **520 passed**；`ruff check src tests` → 与基线一致 6 个既有 I001/F841
+    （0 新增）。真机证据由 Lead 本窗口提供；本 commit **未 push**。
+  - **边界**：偏置是**单物体/单码面**现场标定，换物体/换码尺寸/重新标定外参必须重测；本次
+    只改 env 模式默认抓取偏置，不动 profile/vision/teach 路径；放置目标点由 env_app 站点
+    配置调整，不属本仓。
+
 - **2026-11-15 · 真机/推理服务交付默认切到 env 位置订阅 + legacy 死文件清理（用户确认「最小改动 C」）**：
   - **默认交付**：`submission.yaml` 的 `runtime.uv.argv` `--config` 由
     `configs/pick_place/live_ros2_vision_instance.yaml` 改为
@@ -27,7 +45,7 @@
   - **HEAD 遗留漂移修复（单列，非本任务引入）**：`tests/unit/test_pick_env_frames.py` 硬编码期望
     仍是旧标定 `(0.0014, 0.0090, -0.0114)` → 同步 HEAD 437ece0 的 yaml 值
     `(0.0039, 0.0177, -0.0147)`（断言强度不变）；`docs/ros2-adapter.md` §9.1/§9.2 旧
-    `snapshot_timeout_s: 2.0` 与旧偏置 → 当前 yaml 值（事实对齐）。
+    `snapshot_timeout_s: 2.0` 与旧偏置 → 当时 yaml 值（事实对齐）。
   - **验证（离线）**：`PYTHONPATH=$PWD/src:$PYTHONPATH /usr/bin/python3 -m pytest tests/unit
     tests/smoke -q` → **520 passed**（HEAD 基线实测 1 failed/517 passed，修复漂移后全绿）；
     `ruff check src tests` → 与基线一致 6 个既有 I001/F841（均不在本次改动文件，无新增）；
@@ -67,7 +85,7 @@
     arm 系固定抓取偏置（`|每轴|<=0.1 m`，配置校验 fail-closed）：grasp TCP = marker 位置 +
     `profile.grasp_contact_offset_tcp_m` + `grasp_offset_arm_m`；方法 = 手拖正确抓取 TCP −
     同时刻 env_marker 位姿。现场两轮：`[-0.0008, 0.0086, -0.0093]`（方块 x≈0.23）与最终
-    `[0.0014, 0.0090, -0.0114]`（方块移至 x≈0.28 可达区后；当前 `live_ros2_env.yaml` 值）。
+    `[0.0014, 0.0090, -0.0114]`（方块移至 x≈0.28 可达区后；2026-11-14 窗口值）。
     另：任务 marker 实际边长 2 cm（env site 配置 `marker_size_m: 0.020`，与 discover
     `objects_aruco_2cm` 一致；按 18 mm 估会把位姿整体缩向相机约 2.7 cm）。
   - **2026-11-14 真机验证（env 模式，domain 0）**：链路已验证——env 动态 `/tf`
