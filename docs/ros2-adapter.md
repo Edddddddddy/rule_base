@@ -503,7 +503,7 @@ env_frames:
   target_object_id: "1"           # 上游指定；环境变量 RULE_BASE_TARGET_OBJECT_ID 覆盖
   place_frame: place_target_01    # env_app 的 /tf_static 放置帧
   grasp_offset_arm_m: [0.0, 0.0, 0.0]  # 现场标定：arm 系固定抓取偏置（marker → 指尖接触点）
-  snapshot_timeout_s: 2.0         # 观察位到位后取快照的截止时间（超时整轮失败）
+  snapshot_timeout_s: 5.0         # 观察位到位后取快照的截止时间（TF 发现/瞬断留余量）
   observe_joint_positions: [...]  # 观察位（5 臂关节，rad）；缺省退化为 TCP 观察位
   observe_joint_tolerance_rad: 0.02
   observe_settle_s: 1.0
@@ -537,7 +537,10 @@ env_frames:
 > ① 方块位于 x≈0.23 时：手拖 TCP `[0.2319, 0.0006, -0.0053]`，env `[0.2327, -0.008, 0.004]`
 >    → 偏置 `[-0.0008, 0.0086, -0.0093]`；
 > ② 方块移到 x≈0.28（配置验证可达区）后：手拖 TCP `[0.2571, -0.0030, -0.0071]`，
->    env `[0.2557, -0.0120, 0.0043]` → 偏置 `[0.0014, 0.0090, -0.0114]`（当前 `live_ros2_env.yaml` 值）。
+>    env `[0.2557, -0.0120, 0.0043]` → 偏置 `[0.0014, 0.0090, -0.0114]`（首轮值）；
+> ③ 2026-11-14 晚场次复标（HEAD 437ece0）：`grasp_offset_arm_m` 更新为
+>    `[0.0039, 0.0177, -0.0147]`（当前 `live_ros2_env.yaml` 值）；真机 env 抓取已成功
+>    （width_ok=true，接触宽度≈0.0154 m）。
 > 两轮偏置的 y/z 分量稳定（+9 mm / −11 mm 量级），但 env 单码位姿在真实场景中存在
 > ±5–10 mm 级抖动与几何精度限制（当前外参 `quality_status=review_required`：平移残差
 > 14.3 mm / 旋转 2.81°），这也是 env 模式真机抓取仍需改进标定的原因。

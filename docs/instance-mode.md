@@ -25,13 +25,15 @@ inference_manager ──launch(srv)──▶ 子进程: python3 -m rule_base.ins
 
 ```bash
 # 真机/生产：由 inference_manager 按 submission.yaml 的 runtime.argv 拉起
-python3 -m rule_base.instance.entry --config configs/pick_place/live_ros2_vision_instance.yaml
+# 交付默认 = env 位置订阅（submission.yaml 的 --config 即指向该配置：
+# env_app 动态 /tf 物体 + /tf_static 放置点；见 docs/ros2-adapter.md §9）
+python3 -m rule_base.instance.entry --config configs/pick_place/live_ros2_env.yaml
+
+# 非默认回退：实时视觉实例配置（teach/vision 入口保留，不删除）
+# python3 -m rule_base.instance.entry --config configs/pick_place/live_ros2_vision_instance.yaml
 
 # mock / 测试（禁止真机）：子进程跑 --dry-run --transport ros2
 python3 -m rule_base.instance.entry --config configs/pick_place/mock_ros2_instance.yaml --dry-run
-
-# env 位置订阅模式（env_app TF 物体 + tf_static 放置点；见 docs/ros2-adapter.md §9）
-python3 -m rule_base.instance.entry --config configs/pick_place/live_ros2_env.yaml
 ```
 
 可选参数（默认值即冻结行为，测试可调）：`--warmup-timeout 30`、`--round-timeout 600`、

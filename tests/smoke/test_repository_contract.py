@@ -76,6 +76,24 @@ def test_instance_configs_disable_lease_management():
         assert settings.arm.manage_lease is False, name
 
 
+def test_submission_defaults_to_env_position_subscription():
+    """2026-11-15: 真机/推理服务交付默认 = env 位置订阅（env_app `/tf` + `/tf_static`）。"""
+    submission = yaml.safe_load((ROOT / "submission.yaml").read_text(encoding="utf-8"))
+    argv = submission["runtime"]["uv"]["argv"]
+    assert argv[argv.index("--config") + 1] == "configs/pick_place/live_ros2_env.yaml"
+    config = ROOT / "configs/pick_place/live_ros2_env.yaml"
+    assert config.is_file()
+    settings = load_settings(config)
+    assert settings.env_frames.enabled is True
+    assert settings.arm.acquire_control is True
+    assert settings.arm.manage_lease is False  # 租约由 factory_manager 持有，实例不 acquire/release
+
+
+def test_legacy_backend_mock_config_stays_removed():
+    """2026-11-15: 全仓零引用的 legacy 死配置已删除，防止回潮。"""
+    assert not (ROOT / "tests/integration/config_real_backend_mock.yaml").exists()
+
+
 def test_router_targets_an_existing_pick_config():
     router = yaml.safe_load((ROOT / "configs/live_router.yaml").read_text(encoding="utf-8"))
     assert set(router) == {"by_station"}

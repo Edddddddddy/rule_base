@@ -48,18 +48,19 @@ python3 -m rule_base.interfaces.node --config configs/pick_place/offline.yaml --
 python3 -m rule_base.interfaces.node --config configs/pick_place/live.yaml \
     --dry-run --transport ros2 --rounds 10
 
-# 4) live 真机执行：默认 ROS 2 transport（--transport 可省略；必须有服务端在场）
-#    D-142：live 抓取只允许实时视觉 frames.grasp_target（live_ros2_vision.yaml）
-python3 -m rule_base.interfaces.node --config configs/pick_place/live_ros2_vision.yaml \
+# 4) live 真机执行：默认 ROS 2 transport（--transport 可省略；必须有服务端在场；
+#    仅 Lead+用户在场，先 mock 硬件同栈验证，见 docs/ros2-adapter.md §7）
+#    真机/推理服务**交付默认 = env 位置订阅**（env_app TF；实例/FM 持租约）：
+#    物体 id+坐标来自动态 /tf env_marker_<id>，放置点来自 /tf_static place_target_01，
+#    观察位到位后取一次 TF 快照整轮复用（见下「env 位置订阅模式」）。
+python3 -m rule_base.interfaces.node --config configs/pick_place/live_ros2_env.yaml \
     --run --transport ros2
+#    单机 CLI 调试需先复制到 /tmp 并把 arm.manage_lease 改 true（原配置为实例/FM 持租约）。
 
-# 5) 真机（仅 Lead+用户在场；先 mock 硬件同栈验证，见 docs/ros2-adapter.md §7）
-#    D-142：--run 允许实时视觉 grasp_target 或 env 位置订阅（env_frames）；static 固定物体位姿入口已禁用。
+# 5) 非默认回退：teach/vision 入口保留 —— 实时视觉 frames.grasp_target
+#    D-142：--run 允许 env 位置订阅或实时视觉 grasp_target；static 固定物体位姿入口已禁用。
 python3 -m rule_base.interfaces.node --config configs/pick_place/live_ros2_vision.yaml \
     --run --transport ros2
-#    或 env 位置订阅（实例/FM 持租约；单机调试先复制到 /tmp 改 manage_lease:true）：
-# python3 -m rule_base.interfaces.node --config configs/pick_place/live_ros2_env.yaml \
-#     --run --transport ros2
 ```
 
 > `--run` 启动即校验抓取数据源（D-142）：配置没有 `frames.grasp_target` 且未启用
@@ -92,7 +93,10 @@ CLI 跑一轮）。**契约**：时延/边沿/退出码以 [docs/plan/contracts.
 
 ```bash
 # 真机/生产（manager 按 submission.yaml 拉起；需要 ROS 环境与 arm 服务端）
-python3 -m rule_base.instance.entry --config configs/pick_place/live_ros2_vision_instance.yaml
+# 交付默认 = env 位置订阅：submission.yaml runtime.uv.argv 的 --config 即指向该配置
+python3 -m rule_base.instance.entry --config configs/pick_place/live_ros2_env.yaml
+# 非默认回退：实时视觉实例配置（teach/vision 入口保留，不删除）
+# python3 -m rule_base.instance.entry --config configs/pick_place/live_ros2_vision_instance.yaml
 # mock/测试（禁止真机）：子进程 = rule_base.interfaces.node --dry-run --transport ros2
 python3 -m rule_base.instance.entry --config configs/pick_place/mock_ros2_instance.yaml --dry-run
 ```
@@ -110,12 +114,16 @@ python3 -m rule_base.instance.entry --config configs/pick_place/mock_ros2_instan
 - 退出码：`0` SIGTERM 正常停止、`1` 运行/轮次失败、`2` 配置/env/warmup 失败；stdout 为单行 JSON 事件
   （`instance_ready`/`round_started`/`instance_failed`（stage/error/inference_id）等）。
 
-`configs/pick_place/` 中实例配置：`mock_ros2_instance.yaml`（mock E2E）、
-`live_ros2_vision_instance.yaml`（真机视觉）、`live_ros2_teach.yaml`（真机 teach-point，
-TF 由 station_support 启动项提供）、`live_ros2_env.yaml`（真机 env 位置订阅：env_app 的
-`env_marker_<id>` + `/tf_static` `place_target_01`，见下）。上述实例配置均 `arm.manage_lease: false`。
+`configs/pick_place/` 中实例配置：`live_ros2_env.yaml`（真机/推理服务**交付默认**：env 位置订阅，
+env_app 的 `env_marker_<id>` + `/tf_static` `place_target_01`，见下）、`mock_ros2_instance.yaml`
+（mock E2E）、`live_ros2_vision_instance.yaml`（真机视觉，非默认回退）、`live_ros2_teach.yaml`
+（真机 teach-point，非默认回退；TF 由 station_support 启动项提供）。上述实例配置均
+`arm.manage_lease: false`。
 
-### env 位置订阅模式（2026-11-14，第三种坐标来源，默认关闭）
+### env 位置订阅模式（2026-11-14，第三种坐标来源；2026-11-15 起真机/推理服务交付默认）
+
+`submission.yaml` 的 `runtime.uv.argv` 默认 `--config` 即指向 `configs/pick_place/live_ros2_env.yaml`
+（`manage_lease: false`，租约由 factory_manager 持有）；teach/vision 实例配置仅作为非默认回退保留。
 
 `configs/pick_place/live_ros2_env.yaml` + `env_frames:` 段：抓取物体 id/坐标来自 env_app 发布的
 动态 TF `base_link -> env_marker_<target_object_id>`，放置坐标来自其 `/tf_static` 的
@@ -134,8 +142,8 @@ TF 由 station_support 启动项提供）、`live_ros2_env.yaml`（真机 env �
 `configs/pick_place/offline.yaml` 为 fake 几何（公司 P7 测试用坐标系），
 `configs/pick_place/live.yaml` 为 SO-101 ROS 2 mock 模板（`world` / `base_link` / `objects_cube_01`），
 `configs/pick_place/live_ros2.yaml`（+ `profiles/real_pick.yaml`）为 WP5 **真机/真机栈**保守配置模板
-（static 物体位姿；**`--run` 已禁用，D-142**，真机 `--run` 用 `live_ros2_vision.yaml` +
-实时视觉 `frames.grasp_target`）。
+（static 物体位姿；**`--run` 已禁用，D-142**；真机/交付默认 `--run` 用 `live_ros2_env.yaml` +
+env_app TF，实时视觉 `live_ros2_vision.yaml` 为**非默认回退**）。
 真实工站配置由调用方按 [docs/ros2-adapter.md](docs/ros2-adapter.md) 提供（真机模式见 §7）。
 注意：`ros2.base_frame` 必须等于 `frames.arm_base`（Pick 规划输出的就是该坐标系下的 TCP 位姿，
 适配器 TF 反馈也读同一坐标系；不一致会启动即报配置错误）。

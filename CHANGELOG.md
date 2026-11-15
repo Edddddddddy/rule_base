@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **2026-11-15 · 真机/推理服务交付默认切到 env 位置订阅 + legacy 死文件清理（用户确认「最小改动 C」）**：
+  - **默认交付**：`submission.yaml` 的 `runtime.uv.argv` `--config` 由
+    `configs/pick_place/live_ros2_vision_instance.yaml` 改为
+    **`configs/pick_place/live_ros2_env.yaml`**（env 位置订阅：物体 id+坐标来自 env_app 动态
+    `/tf` `env_marker_<id>`，放置坐标来自 `/tf_static` `place_target_01`，每轮观察位后取**一次**
+    TF 快照整轮复用）；`arm.manage_lease: false`（租约由 factory_manager 持有，实例不
+    acquire/release）、`arm.acquire_control: true`。`live_ros2_teach.yaml` /
+    `live_ros2_vision_instance.yaml` 仅保留为**非默认回退**（不删除配置/代码）；submission
+    头部注释同步。
+  - **删除 legacy 死文件**：`tests/integration/config_real_backend_mock.yaml`（先以
+    `grep -rn` 复核 `.py/.md/.yaml/.sh/.toml` 全仓零引用——仅历史 CHANGELOG 提及；文件自述
+    “historical reference only”，WP5.2b 调查遗留）。未发现其他可安全删除的零引用死文件
+    （`ros2_mock_arm.py`、`instance_e2e_support.py`、`instance_entry_mock.py`、
+    `config_ros2_loopback.yaml`、`test_ros2_loopback.py` 均被 integration 测试/文档引用 → 保留）。
+  - **契约测试**：`tests/smoke/test_repository_contract.py` 新增
+    `test_submission_defaults_to_env_position_subscription`（解析 submission argv → `--config`
+    指向 `configs/pick_place/live_ros2_env.yaml` 且相对路径存在、可 `load_settings`，断言
+    `env_frames.enabled is True`、`arm.manage_lease is False`、`arm.acquire_control is True`）+
+    `test_legacy_backend_mock_config_stays_removed`（防回潮）；既有配置清单/断言全部保留。
+  - **文档**：`README.md`（常用命令/实例模式/env 段：env 为真机与推理服务交付默认并给默认命令，
+    teach/vision 标注非默认回退）、`docs/instance-mode.md` §2（默认入口命令改为
+    `live_ros2_env.yaml`）。
+  - **HEAD 遗留漂移修复（单列，非本任务引入）**：`tests/unit/test_pick_env_frames.py` 硬编码期望
+    仍是旧标定 `(0.0014, 0.0090, -0.0114)` → 同步 HEAD 437ece0 的 yaml 值
+    `(0.0039, 0.0177, -0.0147)`（断言强度不变）；`docs/ros2-adapter.md` §9.1/§9.2 旧
+    `snapshot_timeout_s: 2.0` 与旧偏置 → 当前 yaml 值（事实对齐）。
+  - **验证（离线）**：`PYTHONPATH=$PWD/src:$PYTHONPATH /usr/bin/python3 -m pytest tests/unit
+    tests/smoke -q` → **520 passed**（HEAD 基线实测 1 failed/517 passed，修复漂移后全绿）；
+    `ruff check src tests` → 与基线一致 6 个既有 I001/F841（均不在本次改动文件，无新增）；
+    Python 校验脚本直接加载 submission argv 配置：`env_frames.enabled=True`、
+    `arm.manage_lease=False`、`arm.acquire_control=True`。
+  - **边界/未验证**：真机 env 模式复验由 **Lead 在本轮真机窗口执行**（本 commit 只含离线/契约
+    证据，**未 push**；推送需 Lead 真机验收通过）；不改业务代码语义、wire/契约、其他配置、
+    其他仓库；env 模式已知几何精度限制见上一条 2026-11-14 条目。
+
 - **2026-11-14 · 新增 env 位置订阅模式（第三种坐标来源，additive；用户现场架构要求）**：
   - **背景**：用户要求不使用固定静态示教、不使用腕部检测，物体 id+坐标改由 env_app 发布的
     动态 TF `env_marker_<target_object_id>` 提供，放置坐标由其 `/tf_static` 的 `place_target_01`
