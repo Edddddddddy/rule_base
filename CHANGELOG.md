@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **2026-11-15 · 第二窗口：现场偏置 x 修正 + 真机整轮 PASS（电机/供电根因确认）**：
+  - **现场偏置再修正（用户操作）**：`env_frames.grasp_offset_arm_m` 的 x 由 `0.0039` 改为
+    **`-0.01`** → `[-0.01, 0.0177, -0.0347]`；`tests/unit/test_pick_env_frames.py` 期望同步。
+  - **真机整轮 PASS（2026-11-15 22:02，domain 0）**：用户重新给机械臂上电后，arm_app
+    `/follower/joint_states` 100 Hz 稳定、串口 `sync_read` 超时 **0** 次、控制器 deactivate
+    **0** 次；env 单轮：快照→抓取（`grasp_feedback width≈0.01336 m`、`width_ok=true`）→
+    抬升→放置到站点 `place_target_01 [0.24,0.15,0.03]`→松爪→撤离→`home_end`，
+    `round_result=completed`、`cleanup_confirmed=true`、`/arm/state=0`（证据：workspace
+    `.scratch/real-acceptance-2026-11-15/logs/L4_rule_base_env_round15_after_power_revert.log`）。
+  - **根因结论（供后续硬件维护）**：本窗口之前多次「夹住瞬间后失败」的根因是**电机/供电侧**
+    （重新上电后消失），不是 rule_base 逻辑；期间临时实现的「按实测接触宽度持物」改动
+    **已回退**，抓持语义恢复为「闭爪目标 + 实测宽度判定」（用户要求；夹爪开闭宽度参数不变）。
+  - **未验证/边界**：整轮为单轮；env 外参仍 `review_required`、偏置仍逐位置标定；长时/连续
+    多轮未做。本 commit 由 Lead 真机验证后统一提交。
+
 - **2026-11-15 · 真机窗口抓取偏置修正（env 模式默认配置；用户现场确认写回仓库）**：
   - **背景/真机证据（Lead 提供）**：今日真机 env 模式复验（HEAD 839203d，仓库默认
     `grasp_offset_arm_m=[0.0039, 0.0177, -0.0147]`）连续两次空夹（合爪宽度≈0.005 m）；

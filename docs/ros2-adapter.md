@@ -545,6 +545,16 @@ env_frames:
 >    把抓取点**向下移 2 cm** → `[0.0039, 0.0177, -0.0347]`（当前 `live_ros2_env.yaml` 值，
 >    2026-11-15 写入）后抓取成功（grasp width≈0.01336 m、width_ok=true；round completed、
 >    cleanup_confirmed=true）。偏置仍按物体/码面尺寸逐次标定。
+> ⑤ 2026-11-15 第二窗口现场修正（用户操作）：x 由 `0.0039` 改为 **`-0.01`**
+>    （`[-0.01, 0.0177, -0.0347]`，当前 `live_ros2_env.yaml` 值）；真机完整单轮 PASS：
+>    env 快照→抓取（`grasp_feedback width≈0.01336 m`、`width_ok=true`）→抬升→放至站点
+>    `place_target_01` `[0.24, 0.15, 0.03]`→`release_gripper`→`retreat`→`home_end`，
+>    `round_result=completed`、`cleanup_confirmed=true`、`/arm/state=0`。
+>    同日排查补充：抓取后抬升失败的根因是**电机/供电侧**（用户重新给机械臂上电后，
+>    串口 `sync_read` 超时 0 次、控制器 deactivate 0 次，整轮通过）；曾临时尝试的
+>    「按实测接触宽度持物、避免 6 号舵机堵转」改动**已按用户要求回退**，保持原
+>    “闭爪目标 + 实测宽度判定”语义。
+
 > 偏置的 y/z 分量在 2026-11-14 两轮中稳定（+9 mm / −11 mm 量级），但 env 单码位姿在真实
 > 场景中存在 ±5–10 mm 级抖动与几何精度限制（当前外参 `quality_status=review_required`：
 > 平移残差 14.3 mm / 旋转 2.81°），这也是 env 模式真机抓取仍需改进标定的原因。
