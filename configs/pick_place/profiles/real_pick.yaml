@@ -68,7 +68,7 @@ post_grasp_orientation_arm_xyzw: [0.7071067811865476, 0.0, -0.7071067811865476, 
 # base_link -> place_target_01); only the approach/retreat clearances stay here:
 #   move_to_place_approach (same XY as place, +place_approach_clearance in arm +Z)
 #   -> lower_to_place -> release_gripper -> retreat_from_place (+retreat_clearance, root +Z).
-place_approach_clearance_m: 0.04
-place_retreat_clearance_m: 0.04
+place_approach_clearance_m: 0.02  # 2026-11-16 会话15 站点实验：培养皿中心放置需降低 approach（跑完恢复 0.04）
+place_retreat_clearance_m: 0.02  # 2026-11-16 会话15 站点实验：皿中心 retreat 高度不可达，同步降到 0.02（跑完恢复 0.04）
 # 仅旧行为（未配置 frames.place）使用的 post-grasp 保持时长；真机已配 place，不再插入 hold_object。
 hold_duration_s: 1.0
