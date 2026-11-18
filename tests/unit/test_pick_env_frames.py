@@ -313,7 +313,8 @@ def test_env_plan_converts_root_poses_to_the_arm_command_frame() -> None:
 def test_env_plan_applies_the_field_calibrated_grasp_offset_in_the_arm_frame() -> None:
     settings = load_settings(ENV_CONFIG)
     grasp_offset = tuple(settings.env_frames.grasp_offset_arm_m)
-    assert grasp_offset == pytest.approx((-0.01, 0.0177, -0.0347))
+    # 2026-11-16 会话15 站点实验把 x 改为 -0.005 并随 HEAD 提交（注释预留回滚）；测试同步当前值。
+    assert grasp_offset == pytest.approx((-0.005, 0.0177, -0.0347))
     plan = plan_pick(settings, scene_with(DEFAULT_MARKER, DEFAULT_PLACE))
     assert plan.grasp.position == pytest.approx(
         tuple(value + delta for value, delta in zip(DEFAULT_MARKER.position, grasp_offset, strict=True))

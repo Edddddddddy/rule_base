@@ -177,8 +177,10 @@ def test_live_ros2_place_stage_comes_from_the_tf_place_frame():
     # The place pose is no longer a profile field; only its clearances stay calibrated.
     assert not hasattr(profile, "place_position_arm_m")
     assert not hasattr(profile, "place_orientation_arm_xyzw")
-    assert profile.place_approach_clearance_m == pytest.approx(0.04)
-    assert profile.place_retreat_clearance_m == pytest.approx(0.04)
+    # 2026-11-17 平台链验证提交（6401700）把现场 clearance 改为 0.02（profile 注释预留恢复 0.04，
+    # 但 HEAD 实际值 0.02）；测试与仓库当前现场标定值同步，不改业务配置。
+    assert profile.place_approach_clearance_m == pytest.approx(0.02)
+    assert profile.place_retreat_clearance_m == pytest.approx(0.02)
     assert profile.calibration_revision.endswith("obs-high-wristroll-m150-v11")
 
 
