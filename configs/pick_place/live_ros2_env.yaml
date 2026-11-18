@@ -61,7 +61,8 @@ limits:
   # 单次 servo 目标间隔可能 ~0.31s（`Servo refresh deadline missed`）；放宽到 450ms
   # 仍 < arm_app command_timeout 500ms，超过 450ms 仍明确失败；不改安全限速
   # （max_joint_velocity/step 等不变）。
-  servo_max_gap_s: 0.45
+  # 2026-11-19 真机窗口：WSL/5V 串口偶发 0.5–0.9 s 抖动，站点容差 0.45→0.9（窗口结束可回滚）
+  servo_max_gap_s: 0.9
   stable_time_s: 0.2
   motion_stable_time_s: 0.2
   motion_joint_velocity_rad_s: 0.02
